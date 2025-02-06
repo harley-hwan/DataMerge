@@ -1,0 +1,67 @@
+# .gitignore 파일
+# 빌드 디렉토리
+build/
+Debug/
+Release/
+
+# 프로젝트 파일 및 설정 파일
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# 컴파일된 오브젝트 파일
+*.o
+*.obj
+*.ko
+*.elf
+
+# 컴파일된 라이브러리 파일
+*.lib
+*.a
+*.la
+
+# 컴파일된 실행 파일
+*.exe
+*.out
+*.app
+*.so
+*.dll
+*.dylib
+
+# 템프 파일
+*.swp
+*.bak
+*.tmp
+*~.nib
+*.db
+*.log
+
+# 테스트, 로그, 캐시 파일
+*.tlog
+*.cache
+*.ipch
+*.ilk
+*.aps
+*.ncb
+*.sdf
+*.opensdf
+*.cachefile
+
+# 코드 스타일 및 설정 파일
+.vscode/
+.clang-format
+.clang-tidy
+
+# 다른 VCS 시스템
+.svn/
+.CVS/
+.hg/
+.git/
+
+# 무시해야 하는 다른 종류의 파일
+*.pyc
+*.class
+.DS_Store
+
+*.zip

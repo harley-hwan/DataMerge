@@ -29,9 +29,7 @@ void DataMatching::matchingWithTime()
         tempDataSet[i].item = m_dataSet[i].item;
     }
 
-
-
-    
+       
     int gcqIdx = 0;
     int waveIdx = 0;
     int nxIdx = 0;
@@ -157,11 +155,26 @@ void DataMatching::matchingWithTime()
 
         // diff 초 만큼 더했을 때 60초를 넘어가면 +1분 해야함
         int diffTime = minTime + m_maxDiffSec;
+        //int secOver60 = diffTime % 100;
+        //if (secOver60 >= 60)
+        //{
+        //    diffTime += 100;
+        //    diffTime -= 60;
+        //}
+
+        // 2025-02-07 KJH : 60분을 넘어가면 +1시간 추가.
+        // 초 처리 (60초 넘어가면 +1분)
         int secOver60 = diffTime % 100;
-        if (secOver60 >= 60)
-        {
+        if (secOver60 >= 60) {
             diffTime += 100;
             diffTime -= 60;
+        }
+
+        // 분 처리 (60분 넘어가면 +1시간)
+        int minOver60 = (diffTime / 100) % 100;
+        if (minOver60 >= 60) {
+            diffTime += 10000;
+            diffTime -= 6000;
         }
 
 

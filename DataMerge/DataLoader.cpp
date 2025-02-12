@@ -332,8 +332,6 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
 
 
 
-
-
     // log 파일 읽기
     stShotInfo logDataSet;
     logDataSet.snName = "GCQlog";

@@ -18,6 +18,7 @@
 #define new DEBUG_NEW
 #endif
 
+#pragma comment(linker, "/entry:WinMainCRTStartup /subsystem:console")
 
 // 응용 프로그램 정보에 사용되는 CAboutDlg 대화 상자입니다.
 

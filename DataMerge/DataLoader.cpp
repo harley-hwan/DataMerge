@@ -140,10 +140,12 @@ void DataLoader::loadIncludePath(string path)
     string nxPath = path + "NX";
     if (fs::exists(nxPath) == true)
     {
+        nxPath += "\\";
+        string tmpPath = nxPath + "\\*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(nxPath.c_str(), &fd)) == -1L)
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
             return;
 
         do
@@ -152,7 +154,7 @@ void DataLoader::loadIncludePath(string path)
             vector<string> fileStr = split(str, "_");
             vector<string> fileStr1 = split(str, ".");
 
-            string fullPath = maxPath + fd.name;
+            string fullPath = nxPath + fd.name;
             if (fileStr[0] == NXFile)
                 readNXFile(fullPath);
             else if (fileStr1[0] == NXFile)
@@ -572,7 +574,7 @@ void DataLoader::readNXFile(string csvFilePath)
     if (fileInfo != "csv")
         return;
 
-    m_dataSet[SENSOR_NX].snName = "TrackMan";
+    m_dataSet[SENSOR_NX].snName = "NX";
 
     // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
@@ -677,10 +679,11 @@ vector<string> DataLoader::split(string inputStr, string delimiter)
 void DataLoader::addGCQTime(stShotInfo inputData)
 {
     // csv 파일의 item 중 매칭하고 싶은 변수의 열 위치 추출
-    int numOfBS_csv;
-    int numOfLA_csv;
-    int numOfSA_csv;
-    int numOfBSpin_csv;
+    int numOfBS_csv = -1;
+    int numOfLA_csv = -1;
+    int numOfSA_csv = -1;
+    int numOfBSpin_csv = -1;
+
     for (int i = 0; i < m_dataSet[SENSOR_GCQ].item.size(); i++)
     {
         if (m_dataSet[SENSOR_GCQ].item[i] == "BallSpeed")
@@ -693,14 +696,14 @@ void DataLoader::addGCQTime(stShotInfo inputData)
             numOfBSpin_csv = i;
     }
 
-
     // log 파일의 item 중 매칭하고 싶은 변수의 열 위치 추출
-    int numOfBS_log;
-    int numOfLA_log;
-    int numOfSA_log;
-    int numOfBSpin_log;
-    int numOfDate_log;
-    int numOfTime_log;
+    int numOfBS_log = -1;
+    int numOfLA_log = -1;
+    int numOfSA_log = -1;
+    int numOfBSpin_log = -1;
+    int numOfDate_log = -1;
+    int numOfTime_log = -1;
+
     for (int i = 0; i < inputData.item.size(); i++)
     {
         if (inputData.item[i] == "BallSpeed")
@@ -717,9 +720,6 @@ void DataLoader::addGCQTime(stShotInfo inputData)
             numOfTime_log = i;
     }
 
-
-
-
     // csv 파일과 item 매칭위해 데이터만 임시 저장 
     stShotInfo tempDataSet[SENSOR_TOTALCNT];
     tempDataSet[SENSOR_GCQ].item = m_dataSet[SENSOR_GCQ].item;
@@ -732,72 +732,81 @@ void DataLoader::addGCQTime(stShotInfo inputData)
     {
         if (i == 9)
             int a = 0;
+
+        // LOG 데이터 범위 검사
+        if (numOfLA_log >= inputData.dataVec[i].size() ||
+            numOfSA_log >= inputData.dataVec[i].size() ||
+            numOfBSpin_log >= inputData.dataVec[i].size() ||
+            numOfDate_log >= inputData.dataVec[i].size() ||
+            numOfTime_log >= inputData.dataVec[i].size())
+        {
+            std::cout << "Err: LOG data[" << i << "] insufficient columns (size: " << inputData.dataVec[i].size() << ")" << std::endl;
+            continue;
+        }
+
         for (int j = 0; j < m_dataSet[SENSOR_GCQ].dataVec.size(); j++)
         {
+            // CSV 데이터 범위 검사
+            if (numOfLA_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size() ||
+                numOfSA_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size() ||
+                numOfBSpin_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size())
+            {
+                std::cout << "Err: CSV data[" << j << "] insufficient columns (size: " << m_dataSet[SENSOR_GCQ].dataVec[j].size() << ")" << std::endl;
+                continue;
+            }
+
             //bool isSameBS = false;
             bool isSameLA = false;
             bool isSameSA = false;
             bool isSameBSpin = false;
             bool isSameSS = false;
 
-            // log 파일의 볼 스피드 값을 m/s으로 변환하는 과정에서 소수점 오차 발생함
-            //// 볼 스피드 값 일치 여부 확인
-            //double dLogVal_bs = stof(inputData.dataVec[i][numOfBS_log]) * MPH2MPS;
-            //double dCsvVal_bs = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfBS_csv]);
+            try {
+                // 볼 발사각 값 일치 여부 확인 - 인덱스 수정됨!           
+                double dLogVal_la = stof(inputData.dataVec[i][numOfLA_log]);  // LOG 인덱스 사용
+                double dCsvVal_la = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfLA_csv]);  // CSV 인덱스 사용
 
-            //// 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
-            //int nCsvVal_bs = (int)(round(dCsvVal_bs * 10) / 10 * 1000);
-            //int nLogVal_bs = (int)(round(dLogVal_bs * 10) / 10 * 1000);
+                // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
+                int nCsvVal_la = (int)(round(dCsvVal_la * 10) / 10 * 1000);
+                int nLogVal_la = (int)(round(dLogVal_la * 10) / 10 * 1000);
 
-            //if (nCsvVal_bs == nLogVal_bs)
-            //    isSameBS = true;
-            
+                if (nCsvVal_la == nLogVal_la)
+                    isSameLA = true;
 
+                // 볼 방향각 값 일치 여부 확인            
+                double dLogVal_sa = stof(inputData.dataVec[i][numOfSA_log]);
+                double dCsvVal_sa = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfSA_csv]);
 
-            // 볼 발사각 값 일치 여부 확인            
-            double dLogVal_la = stof(inputData.dataVec[i][numOfLA_csv]);
-            double dCsvVal_la = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfLA_log]);
+                // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
+                int nCsvVal_sa = (int)(round(dCsvVal_sa * 10) / 10 * 1000);
+                int nLogVal_sa = (int)(round(dLogVal_sa * 10) / 10 * 1000);
 
-            // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
-            int nCsvVal_la = (int)(round(dCsvVal_la * 10) / 10 * 1000);
-            int nLogVal_la = (int)(round(dLogVal_la * 10) / 10 * 1000);
+                if (nCsvVal_sa == nLogVal_sa)
+                    isSameSA = true;
 
-            if (nCsvVal_la == nLogVal_la)
-                isSameLA = true;
-            
+                // 백스핀 값 일치 여부 확인            
+                double dLogVal_bs = stof(inputData.dataVec[i][numOfBSpin_log]);
+                double dCsvVal_bs = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfBSpin_csv]);
 
+                // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
+                int nCsvVal_bs = (int)(round(dCsvVal_bs * 10) / 10 * 1000);
+                int nLogVal_bs = (int)(round(dLogVal_bs * 10) / 10 * 1000);
 
-            // 볼 방향각 값 일치 여부 확인            
-            double dLogVal_sa = stof(inputData.dataVec[i][numOfSA_log]);
-            double dCsvVal_sa = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfSA_csv]);
+                if (nCsvVal_bs == nLogVal_bs)
+                    isSameBSpin = true;
 
-            // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
-            int nCsvVal_sa = (int)(round(dCsvVal_sa * 10) / 10 * 1000);
-            int nLogVal_sa = (int)(round(dLogVal_sa * 10) / 10 * 1000);
-
-            if (nCsvVal_sa == nLogVal_sa)
-                isSameSA = true;
-
-
-            // 백스핀 값 일치 여부 확인            
-            double dLogVal_bs = stof(inputData.dataVec[i][numOfBSpin_log]);
-            double dCsvVal_bs = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfBSpin_csv]);
-
-            // 부동소수점때문에 소수점 첫째자리 형태로 만든 후 정수로 비교
-            int nCsvVal_bs = (int)(round(dCsvVal_bs * 10) / 10 * 1000);
-            int nLogVal_bs = (int)(round(dLogVal_bs * 10) / 10 * 1000);
-
-            if (nCsvVal_bs == nLogVal_bs)
-                isSameBSpin = true;
-            
-
+            }
+            catch (const std::exception& e) {
+                std::cout << "Err occurred (i=" << i << ", j=" << j << "): " << e.what() << std::endl;
+                continue;
+            }
 
             // 세개 데이터가 모두 동일할 때 해당 시간의 데이터를 csv에서 가져옴
             //if (isSameBS == true && isSameLA == true && isSameSA == true)
             if (isSameBSpin == true && isSameLA == true && isSameSA == true)
             {
                 vector<string> tempDataVec = m_dataSet[SENSOR_GCQ].dataVec[j];
-                
+
                 // 시간 정보 추가함               
                 string val = inputData.dataVec[i][numOfDate_log] + "_" + inputData.dataVec[i][numOfTime_log];
                 tempDataVec.insert(tempDataVec.begin(), val);
@@ -807,17 +816,12 @@ void DataLoader::addGCQTime(stShotInfo inputData)
         }
     }
 
-
     tempDataSet[SENSOR_GCQ].dataVec = dataVecVec;
-
 
     // 시간 추가하여 데이터만 다시 원위치
     m_dataSet[SENSOR_GCQ].item = tempDataSet[SENSOR_GCQ].item;
     m_dataSet[SENSOR_GCQ].dataVec = tempDataSet[SENSOR_GCQ].dataVec;
-
-
 }
-
 void DataLoader::addTrackManTime()
 {
     // csv 파일의 item 중 Date 위치 추출

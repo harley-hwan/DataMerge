@@ -13,7 +13,7 @@
 #define TM4File1		"Trackman"
 #define WaveFile		"ShotRes"
 #define MaxFile			"MAX"
-#define NXFile			"NX"
+#define NXFile			"NXShotData"
 #define GRadarFile		"ShotRes"
 
 using namespace std;

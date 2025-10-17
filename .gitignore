@@ -401,3 +401,4 @@ FodyWeavers.xsd
 *.zip
 /DataMerge/0113 (완)
 /DataMerge/0210
+*.csv

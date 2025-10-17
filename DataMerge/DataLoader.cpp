@@ -1,12 +1,13 @@
-#include "pch.h"
+ï»¿#include "pch.h"
 #include "DataLoader.h"
 #include <filesystem>
+#include <map>
 
 namespace fs = std::filesystem;
 
 void DataLoader::loadIncludePath(string path)
 {
-    // °¢ ¼¾¼­¸¶´Ù Æú´õ °³º° Á¸ÀçÇÒ ¶§ °¡´É
+    // ê° ì„¼ì„œë§ˆë‹¤ í´ë” ê°œë³„ ì¡´ì¬í•  ë•Œ ê°€ëŠ¥
 
     string gcqPath = path + "GCQ";
     if (fs::exists(gcqPath) == true)
@@ -265,80 +266,143 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
     string line;
     std::ifstream csvFile(csvFilePath);
     if (true == csvFile.fail())
+    {
+        std::cout << "Failed to open CSV file: " << csvFilePath << std::endl;
         return;
+    }
 
     std::ifstream logFile(logFilePath);
     if (true == logFile.fail())
+    {
+        std::cout << "Failed to open LOG file: " << logFilePath << std::endl;
         return;
+    }
 
     m_dataSet[SENSOR_GCQ].snName = "GCQ";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // CSV íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
+    bool headerFound = false;
+    size_t expectedColumns = 0;
+
     while (getline(csvFile, line))
     {
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
-        if (line.find("Foresight") != string::npos)
+        // BOM ì œê±° (UTF-8)
+        if (line.size() >= 3 &&
+            (unsigned char)line[0] == 0xEF &&
+            (unsigned char)line[1] == 0xBB &&
+            (unsigned char)line[2] == 0xBF)
         {
-            for (int i = 0; i < line.length(); i++)
-                line.erase(find(line.begin(), line.end(), ' '));
+            line = line.substr(3);
+        }
+
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
+        if (!headerFound && line.find("Foresight") != string::npos)
+        {
+            // ê³µë°± ì œê±°
+            string cleanLine = line;
+            cleanLine.erase(remove(cleanLine.begin(), cleanLine.end(), ' '), cleanLine.end());
 
             vector<string> itemVec = split(line, ",");
 
-            // ÄŞ¸¶·Î µ¥ÀÌÅÍ ÀÌ¸§ ºĞ·ùÇß´Âµ¥ ºóÄ­ÀÎ °æ¿ì ÀÖÀ½
+            // ë¹ˆ í•­ëª© ì œê±° ë° ì •ë¦¬
             vector<string> newItemVec;
-            for (int i = 0; i < itemVec.size(); i++)
+            for (size_t i = 0; i < itemVec.size(); i++)
             {
-                if (itemVec[i] == "")
-                    continue;
-                else
-                    newItemVec.push_back(itemVec[i]);
+                // ì²« ë²ˆì§¸ í•­ëª©ì—ì„œ Foresight í—¤ë” ì œê±°
+                if (i == 0)
+                {
+                    size_t pos = itemVec[i].find("Club");
+                    if (pos != string::npos)
+                    {
+                        itemVec[i] = itemVec[i].substr(pos);
+                    }
+                }
+
+                // ê³µë°± ì œê±°
+                string trimmed = itemVec[i];
+                trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
+                trimmed.erase(trimmed.find_last_not_of(" \t\r\n") + 1);
+
+                if (!trimmed.empty())
+                {
+                    newItemVec.push_back(trimmed);
+                }
             }
 
             m_dataSet[SENSOR_GCQ].item = newItemVec;
+            expectedColumns = newItemVec.size();
+            headerFound = true;
+
+            std::cout << "GCQ CSV Header found with " << expectedColumns << " columns" << std::endl;
             continue;
         }
 
-
-        if (line.find("M/S") != string::npos)
+        // ë‹¨ìœ„ í–‰ì´ë‚˜ ë‹¤ë¥¸ ë©”íƒ€ë°ì´í„° ìŠ¤í‚µ
+        if (line.find("M/S") != string::npos ||
+            line.find("Average") != string::npos ||
+            line.find("Std.") != string::npos ||
+            line.find("ï¿½ï¿½") != string::npos)  // í•œê¸€ ë‹¨ìœ„ í‘œì‹œ
+        {
             continue;
+        }
 
-        if (line.find("Average") != string::npos)
+        // ë¹ˆ ì¤„ ìŠ¤í‚µ
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+        {
             continue;
+        }
 
-        if (line.find("Std.") != string::npos)
-            continue;
-
-
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
+        // ë”°ì˜´í‘œ ì œê±°
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
 
         vector<string> dataVec = split(line, ",");
 
-        // ÄŞ¸¶·Î µ¥ÀÌÅÍ ÀÌ¸§ ºĞ·ùÇß´Âµ¥ ºóÄ­ÀÎ °æ¿ì ÀÖÀ½
-        vector<string> newDataVec;
-        for (int i = 0; i < dataVec.size(); i++)
+        // ë°ì´í„°ê°€ ìˆëŠ” í–‰ì¸ì§€ í™•ì¸
+        bool hasData = false;
+        for (const auto& data : dataVec)
         {
-            if (dataVec[i] == "")
-                continue;
-            else
-                newDataVec.push_back(dataVec[i]);
+            if (!data.empty() && data != " ")
+            {
+                hasData = true;
+                break;
+            }
         }
-         
 
-        if (dataVec[0] == "")
+        if (!hasData || dataVec.empty() || dataVec[0].empty())
+        {
             continue;
+        }
 
-        m_dataSet[SENSOR_GCQ].dataVec.push_back(newDataVec);
+        // ì—´ ê°œìˆ˜ ì •ê·œí™” - í—¤ë”ê°€ ì„¤ì •ëœ ê²½ìš°ì—ë§Œ
+        if (expectedColumns > 0)
+        {
+            // ì—´ì´ ë¶€ì¡±í•œ ê²½ìš° ë¹ˆ ë¬¸ìì—´ë¡œ ì±„ì›€
+            while (dataVec.size() < expectedColumns)
+            {
+                dataVec.push_back("");
+            }
+
+            // ì—´ì´ ì´ˆê³¼í•˜ëŠ” ê²½ìš° ì˜ë¼ëƒ„
+            if (dataVec.size() > expectedColumns)
+            {
+                dataVec.resize(expectedColumns);
+                std::cout << "Warning: Row has " << dataVec.size()
+                    << " columns, expected " << expectedColumns
+                    << ". Extra columns removed." << std::endl;
+            }
+        }
+
+        m_dataSet[SENSOR_GCQ].dataVec.push_back(dataVec);
     }
 
+    std::cout << "GCQ CSV loaded: " << m_dataSet[SENSOR_GCQ].dataVec.size() << " data rows" << std::endl;
 
-
-    // log ÆÄÀÏ ÀĞ±â
+    // LOG íŒŒì¼ ì²˜ë¦¬
     stShotInfo logDataSet;
     logDataSet.snName = "GCQlog";
 
-    // log µ¥ÀÌÅÍ Ç×¸ñ
+    // log ë°ì´í„° í•­ëª©
     vector<string> logItemVec;
     logItemVec.push_back("Date");
     logItemVec.push_back("Time");
@@ -350,106 +414,157 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
     logItemVec.push_back("TotalSpin");
     logDataSet.item = logItemVec;
 
-
     bool isSpinInfo = false;
     string date;
     vector<string> dataVec;
     vector<vector<string>> dataVecVec;
 
-    // txt ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // LOG íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (getline(logFile, line))
     {
-        for (int i = 0; i < line.length(); i++)
-        {
-            line.erase(find(line.begin(), line.end(), '\0'));
-            line.erase(find(line.begin(), line.end(), '\r'));
-        }
+        // ì œì–´ ë¬¸ì ì œê±°
+        line.erase(remove(line.begin(), line.end(), '\0'), line.end());
+        line.erase(remove(line.begin(), line.end(), '\r'), line.end());
 
-        // Date´Â ·Î±×¿¡ ÇÑ¹ø¸¸ ±â·ÏµÇ¾î ÇÑ¹ø¸¸ ÃßÃâµÊ(Date: 02/12/2024   Time: 16:15:15)
+        // Date ì¶”ì¶œ
         if (line.find("Date:") == 0)
         {
-            // ³¯Â¥ ÃßÃâ (02/12/2024)
             string splitDate = "Date: ";
-            string tmp = line.substr(splitDate.length(), 10);
-            vector<string> dateVec = split(tmp, "/");
-            date = dateVec[2] + dateVec[1] + dateVec[0];
+            if (line.length() >= splitDate.length() + 10)
+            {
+                string tmp = line.substr(splitDate.length(), 10);
+                vector<string> dateVec = split(tmp, "/");
+                if (dateVec.size() >= 3)
+                {
+                    date = dateVec[2] + dateVec[1] + dateVec[0];
+                }
+            }
             continue;
         }
 
+        // Ball Speed
         if (line.find("Ball Speed (MPH)") != string::npos)
         {
-            // ½Ã°£ ÃßÃâ(16:15:15)
-            string tmp = line.substr(line.find("[") + 1, 8);
-            vector<string> dateVec = split(tmp, ":");
-            string time = dateVec[0] + dateVec[1] + dateVec[2];
+            size_t bracketPos = line.find("[");
+            if (bracketPos != string::npos && line.length() > bracketPos + 8)
+            {
+                string tmp = line.substr(bracketPos + 1, 8);
+                vector<string> timeVec = split(tmp, ":");
+                if (timeVec.size() >= 3)
+                {
+                    string time = timeVec[0] + timeVec[1] + timeVec[2];
 
-            // À§¿¡¼­ ³¯Â¥ ÃßÃâÇÏ°í, ¸Å¹ø ÀúÀå
-            dataVec.push_back(date);
-            dataVec.push_back(time);
+                    dataVec.clear();
+                    dataVec.push_back(date);
+                    dataVec.push_back(time);
 
-            // º¼ ½ºÇÇµå ÃßÃâ ([16:22:39:189] Ball Speed (MPH)    = 98.22)
-            vector<string> datastr = split(line, "=");
-            dataVec.push_back(datastr[1]);
+                    vector<string> datastr = split(line, "=");
+                    if (datastr.size() >= 2)
+                    {
+                        string value = datastr[1];
+                        value.erase(0, value.find_first_not_of(" \t"));
+                        value.erase(value.find_last_not_of(" \t") + 1);
+                        dataVec.push_back(value);
+                    }
+                }
+            }
             continue;
         }
 
+        // Launch Angle
         if (line.find("Launch Angle (Deg)") != string::npos)
         {
-            // º¼ ¹ß»ç°¢ ÃßÃâ ([16:21:38:262] Launch Angle (Deg)  = 19.0)
             vector<string> datastr = split(line, "=");
-            dataVec.push_back(datastr[1]);
+            if (datastr.size() >= 2)
+            {
+                string value = datastr[1];
+                value.erase(0, value.find_first_not_of(" \t"));
+                value.erase(value.find_last_not_of(" \t") + 1);
+                dataVec.push_back(value);
+            }
             continue;
         }
 
+        // Azimuth (Ball Direction)
         if (line.find("Azimuth (Deg)") != string::npos)
         {
-            // º¼ ¹æÇâ°¢ ÃßÃâ ([16:21:38:262] Azimuth (Deg)       = 1.1)
             vector<string> datastr = split(line, "=");
-            dataVec.push_back(datastr[1]);
+            if (datastr.size() >= 2)
+            {
+                string value = datastr[1];
+                value.erase(0, value.find_first_not_of(" \t"));
+                value.erase(value.find_last_not_of(" \t") + 1);
+                dataVec.push_back(value);
+            }
             continue;
         }
 
-
-        // ÇØ´ç ¹®±¸°¡ ³ª¿À¸é ±× ´ÙÀ½ ÁÙÀÇ ½ºÇÉ Á¤º¸ ÃßÃâ
+        // Spin ì •ë³´ ì‹œì‘
         if (line.find("Processing SPIN data") != string::npos)
+        {
             isSpinInfo = true;
+        }
 
         if (isSpinInfo)
         {
+            // BackSpin
             if (line.find("BackSpinRpm") != string::npos)
             {
                 vector<string> datastr = split(line, "=");
-                dataVec.push_back(datastr[1]);
+                if (datastr.size() >= 2)
+                {
+                    string value = datastr[1];
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    value.erase(value.find_last_not_of(" \t") + 1);
+                    dataVec.push_back(value);
+                }
                 continue;
             }
 
+            // SideSpin
             if (line.find("SideSpinRpm") != string::npos)
             {
                 vector<string> datastr = split(line, "=");
-                dataVec.push_back(datastr[1]);
+                if (datastr.size() >= 2)
+                {
+                    string value = datastr[1];
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    value.erase(value.find_last_not_of(" \t") + 1);
+                    dataVec.push_back(value);
+                }
                 continue;
             }
 
+            // TotalSpin
             if (line.find("TotalSpinRpm") != string::npos)
             {
                 vector<string> dataStr = split(line, "=");
-                dataVec.push_back(dataStr[1]);
+                if (dataStr.size() >= 2)
+                {
+                    string value = dataStr[1];
+                    value.erase(0, value.find_first_not_of(" \t"));
+                    value.erase(value.find_last_not_of(" \t") + 1);
+                    dataVec.push_back(value);
 
-                // ÃÑ ½ºÇÉ·®±îÁö ÃßÃâÇÏ¸é ·Î±×¿¡¼­´Â ±×¸¸ »Ì¾Æµµ µÊ
-                dataVecVec.push_back(dataVec);
-                dataVec.clear();
-                isSpinInfo = false;
+                    // ë°ì´í„°ê°€ ì™„ì„±ë˜ì—ˆëŠ”ì§€ í™•ì¸
+                    if (dataVec.size() >= 8)  // ëª¨ë“  í•„ë“œê°€ ì±„ì›Œì¡ŒëŠ”ì§€
+                    {
+                        dataVecVec.push_back(dataVec);
+                    }
+
+                    dataVec.clear();
+                    isSpinInfo = false;
+                }
                 continue;
             }
         }
     }
 
     logDataSet.dataVec = dataVecVec;
+    std::cout << "GCQ LOG loaded: " << logDataSet.dataVec.size() << " data entries" << std::endl;
 
-
-    // log¿¡¼­ ÃßÃâÇÑ ½Ã°£ µ¥ÀÌÅÍ Ãß°¡
+    // logì—ì„œ ì¶”ì¶œí•œ ì‹œê°„ ë°ì´í„° ì¶”ê°€
     addGCQTime(logDataSet);
-
 }
 
 void DataLoader::readTrackManFile(string csvFilePath)
@@ -465,13 +580,13 @@ void DataLoader::readTrackManFile(string csvFilePath)
 
     m_dataSet[SENSOR_TM].snName = "TM4";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // csv íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (std::getline(file, line))
     {
         if (line.find("sep=,") != string::npos)
             continue;
 
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
         if (line.find("Date") != string::npos)
         {
             for (int i = 0; i < line.length(); i++)
@@ -484,7 +599,7 @@ void DataLoader::readTrackManFile(string csvFilePath)
         if (line.find("m/s") != string::npos)
             continue;
 
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
         for (int i = 0; i < line.length(); i++)
             line.erase(find(line.begin(), line.end(), '\"'));
 
@@ -506,10 +621,10 @@ void DataLoader::readWaveFile(string csvFilePath)
 
     m_dataSet[SENSOR_WAVE].snName = "Wave";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // csv íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (std::getline(file, line))
     {
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
         if (line.find("Name") != string::npos)
         {
             for (int i = 0; i < line.length(); i++)
@@ -519,7 +634,7 @@ void DataLoader::readWaveFile(string csvFilePath)
             continue;
         }
 
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
         for (int i = 0; i < line.length(); i++)
             line.erase(find(line.begin(), line.end(), '\"'));
 
@@ -541,10 +656,10 @@ void DataLoader::readMaxFile(string csvFilePath)
 
     m_dataSet[SENSOR_MAX].snName = "Max";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // csv íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (std::getline(file, line))
     {
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
         if (line.find("Shot ID") != string::npos)
         {
             for (int i = 0; i < line.length(); i++)
@@ -554,7 +669,7 @@ void DataLoader::readMaxFile(string csvFilePath)
             continue;
         }
 
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
         for (int i = 0; i < line.length(); i++)
             line.erase(find(line.begin(), line.end(), '\"'));
 
@@ -576,20 +691,20 @@ void DataLoader::readNXFile(string csvFilePath)
 
     m_dataSet[SENSOR_NX].snName = "NX";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // csv íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (std::getline(file, line))
     {
         if (line.find("NXSensor") != string::npos)
             continue;
 
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
         if (line.find("ShotDB") != string::npos)
         {
             m_dataSet[SENSOR_NX].item = split(line, ",");
             continue;
         }
 
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
         for (int i = 0; i < line.length(); i++)
             line.erase(find(line.begin(), line.end(), '\"'));
 
@@ -611,10 +726,10 @@ void DataLoader::readGRadarFile(string csvFilePath)
 
     m_dataSet[SENSOR_GRADAR].snName = "GRadar";
 
-    // csv ÆÄÀÏ ÀĞÀ¸¸é¼­ µ¥ÀÌÅÍ ÃßÃâ
+    // csv íŒŒì¼ ì½ìœ¼ë©´ì„œ ë°ì´í„° ì¶”ì¶œ
     while (std::getline(file, line))
     {
-        // ¸Ç À­ÁÙ µ¥ÀÌÅÍ ÀÌ¸§¸¸ ÃßÃâ
+        // ë§¨ ìœ—ì¤„ ë°ì´í„° ì´ë¦„ë§Œ ì¶”ì¶œ
         if (line.find("Name") != string::npos)
         {
             for (int i = 0; i < line.length(); i++)
@@ -624,7 +739,7 @@ void DataLoader::readGRadarFile(string csvFilePath)
             continue;
         }
 
-        // µ¥ÀÌÅÍ ºÎºĞ¸¸ ÃßÃâ
+        // ë°ì´í„° ë¶€ë¶„ë§Œ ì¶”ì¶œ
         for (int i = 0; i < line.length(); i++)
             line.erase(find(line.begin(), line.end(), '\"'));
 
@@ -635,7 +750,7 @@ void DataLoader::readGRadarFile(string csvFilePath)
 
 void DataLoader::excute(stShotInfo* outputData[(int)SENSOR_TOTALCNT])
 {
-    // GCQ´Â ÆÄÀÏ ·ÎµåÇÒ ¶§ ½Ã°£ Á¤º¸ Ãß°¡ ÇÔ
+    // GCQëŠ” íŒŒì¼ ë¡œë“œí•  ë•Œ ì‹œê°„ ì •ë³´ ì¶”ê°€ í•¨
 
     if (m_dataSet[SENSOR_TM].dataVec.size() != 0)
         addTrackManTime();
@@ -678,153 +793,207 @@ vector<string> DataLoader::split(string inputStr, string delimiter)
 
 void DataLoader::addGCQTime(stShotInfo inputData)
 {
-    // csv ÆÄÀÏÀÇ item Áß ¸ÅÄªÇÏ°í ½ÍÀº º¯¼öÀÇ ¿­ À§Ä¡ ÃßÃâ
+    // ë°ì´í„°ê°€ ì—†ëŠ” ê²½ìš° ì¡°ê¸° ì¢…ë£Œ
+    if (m_dataSet[SENSOR_GCQ].dataVec.empty() || inputData.dataVec.empty())
+    {
+        std::cout << "Warning: GCQ CSV or LOG data is empty. Skipping time synchronization." << std::endl;
+        return;
+    }
+
+    // ì—´ ì´ë¦„ì„ ì¸ë±ìŠ¤ë¡œ ë§¤í•‘í•˜ëŠ” ë§µ ìƒì„±
+    std::map<string, int> csvColumnMap;
+    std::map<string, int> logColumnMap;
+
+    // CSV íŒŒì¼ì˜ ì—´ ë§¤í•‘
+    for (int i = 0; i < m_dataSet[SENSOR_GCQ].item.size(); i++)
+    {
+        string colName = m_dataSet[SENSOR_GCQ].item[i];
+        // ê³µë°± ì œê±°
+        colName.erase(0, colName.find_first_not_of(" \t"));
+        colName.erase(colName.find_last_not_of(" \t") + 1);
+        csvColumnMap[colName] = i;
+    }
+
+    // LOG íŒŒì¼ì˜ ì—´ ë§¤í•‘
+    for (int i = 0; i < inputData.item.size(); i++)
+    {
+        logColumnMap[inputData.item[i]] = i;
+    }
+
+    // í•„ìš”í•œ ì—´ ì°¾ê¸°
     int numOfBS_csv = -1;
     int numOfLA_csv = -1;
     int numOfSA_csv = -1;
     int numOfBSpin_csv = -1;
 
-    for (int i = 0; i < m_dataSet[SENSOR_GCQ].item.size(); i++)
+    // CSV ì—´ ì°¾ê¸° (ëŒ€ì†Œë¬¸ì êµ¬ë¶„ ì—†ì´, ìœ ì—°í•˜ê²Œ)
+    for (const auto& pair : csvColumnMap)
     {
-        if (m_dataSet[SENSOR_GCQ].item[i] == "BallSpeed")
-            numOfBS_csv = i;
-        if (m_dataSet[SENSOR_GCQ].item[i] == "LaunchAngle")
-            numOfLA_csv = i;
-        if (m_dataSet[SENSOR_GCQ].item[i] == "SideAngle")
-            numOfSA_csv = i;
-        if (m_dataSet[SENSOR_GCQ].item[i] == "Backspin")
-            numOfBSpin_csv = i;
+        string lowerCol = pair.first;
+        transform(lowerCol.begin(), lowerCol.end(), lowerCol.begin(), ::tolower);
+
+        if (lowerCol.find("ball") != string::npos && lowerCol.find("speed") != string::npos)
+            numOfBS_csv = pair.second;
+        else if (lowerCol.find("launch") != string::npos && lowerCol.find("angle") != string::npos)
+            numOfLA_csv = pair.second;
+        else if (lowerCol.find("side") != string::npos && lowerCol.find("angle") != string::npos)
+            numOfSA_csv = pair.second;
+        else if (lowerCol.find("backspin") != string::npos)
+            numOfBSpin_csv = pair.second;
     }
 
-    // log ÆÄÀÏÀÇ item Áß ¸ÅÄªÇÏ°í ½ÍÀº º¯¼öÀÇ ¿­ À§Ä¡ ÃßÃâ
-    int numOfBS_log = -1;
-    int numOfLA_log = -1;
-    int numOfSA_log = -1;
-    int numOfBSpin_log = -1;
-    int numOfDate_log = -1;
-    int numOfTime_log = -1;
+    // ëŒ€ì²´ ì´ë¦„ìœ¼ë¡œ ë‹¤ì‹œ ì°¾ê¸°
+    if (numOfBS_csv == -1 && csvColumnMap.find("BallSpeed") != csvColumnMap.end())
+        numOfBS_csv = csvColumnMap["BallSpeed"];
+    if (numOfLA_csv == -1 && csvColumnMap.find("LaunchAngle") != csvColumnMap.end())
+        numOfLA_csv = csvColumnMap["LaunchAngle"];
+    if (numOfSA_csv == -1 && csvColumnMap.find("SideAngle") != csvColumnMap.end())
+        numOfSA_csv = csvColumnMap["SideAngle"];
+    if (numOfBSpin_csv == -1 && csvColumnMap.find("Backspin") != csvColumnMap.end())
+        numOfBSpin_csv = csvColumnMap["Backspin"];
 
-    for (int i = 0; i < inputData.item.size(); i++)
+    // LOG ì—´ ì¸ë±ìŠ¤
+    int numOfBS_log = logColumnMap.count("BallSpeed") ? logColumnMap["BallSpeed"] : -1;
+    int numOfLA_log = logColumnMap.count("LaunchAngle") ? logColumnMap["LaunchAngle"] : -1;
+    int numOfSA_log = logColumnMap.count("BallDirection") ? logColumnMap["BallDirection"] : -1;
+    int numOfBSpin_log = logColumnMap.count("BackSpin") ? logColumnMap["BackSpin"] : -1;
+    int numOfDate_log = logColumnMap.count("Date") ? logColumnMap["Date"] : -1;
+    int numOfTime_log = logColumnMap.count("Time") ? logColumnMap["Time"] : -1;
+
+    // í•„ìˆ˜ ì—´ í™•ì¸
+    if (numOfLA_csv == -1 || numOfSA_csv == -1 || numOfBSpin_csv == -1)
     {
-        if (inputData.item[i] == "BallSpeed")
-            numOfBS_log = i;
-        if (inputData.item[i] == "LaunchAngle")
-            numOfLA_log = i;
-        if (inputData.item[i] == "BallDirection")
-            numOfSA_log = i;
-        if (inputData.item[i] == "BackSpin")
-            numOfBSpin_log = i;
-        if (inputData.item[i] == "Date")
-            numOfDate_log = i;
-        if (inputData.item[i] == "Time")
-            numOfTime_log = i;
+        std::cout << "Error: Required columns not found in GCQ CSV file" << std::endl;
+        std::cout << "  Launch Angle column: " << (numOfLA_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
+        std::cout << "  Side Angle column: " << (numOfSA_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
+        std::cout << "  Backspin column: " << (numOfBSpin_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
+        return;
     }
 
-    // csv ÆÄÀÏ°ú item ¸ÅÄªÀ§ÇØ µ¥ÀÌÅÍ¸¸ ÀÓ½Ã ÀúÀå 
-    stShotInfo tempDataSet[SENSOR_TOTALCNT];
-    tempDataSet[SENSOR_GCQ].item = m_dataSet[SENSOR_GCQ].item;
-    tempDataSet[SENSOR_GCQ].item.insert(tempDataSet[SENSOR_GCQ].item.begin(), "Date-Time");
+    if (numOfLA_log == -1 || numOfSA_log == -1 || numOfBSpin_log == -1 ||
+        numOfDate_log == -1 || numOfTime_log == -1)
+    {
+        std::cout << "Error: Required columns not found in GCQ LOG file" << std::endl;
+        return;
+    }
+
+    // ì‹œê°„ ì •ë³´ë¥¼ ì¶”ê°€í•œ ì„ì‹œ ë°ì´í„°ì…‹
+    stShotInfo tempDataSet;
+    tempDataSet.item = m_dataSet[SENSOR_GCQ].item;
+    tempDataSet.item.insert(tempDataSet.item.begin(), "Date-Time");
 
     vector<vector<string>> dataVecVec;
+    int matchedCount = 0;
+    int unmatchedCount = 0;
 
-    // csvÀÇ °ª°ú logÀÇ °ª°ú È®ÀÎ ÈÄ logÀÇ ½Ã°£ Á¤º¸ Ãß°¡
+    // ë§¤ì¹­ í”„ë¡œì„¸ìŠ¤
     for (int i = 0; i < inputData.dataVec.size(); i++)
     {
-        if (i == 9)
-            int a = 0;
-
-        // LOG µ¥ÀÌÅÍ ¹üÀ§ °Ë»ç
-        if (numOfLA_log >= inputData.dataVec[i].size() ||
-            numOfSA_log >= inputData.dataVec[i].size() ||
-            numOfBSpin_log >= inputData.dataVec[i].size() ||
-            numOfDate_log >= inputData.dataVec[i].size() ||
-            numOfTime_log >= inputData.dataVec[i].size())
+        // LOG ë°ì´í„° ë²”ìœ„ ê²€ì‚¬
+        const auto& logRow = inputData.dataVec[i];
+        if (numOfLA_log >= logRow.size() ||
+            numOfSA_log >= logRow.size() ||
+            numOfBSpin_log >= logRow.size() ||
+            numOfDate_log >= logRow.size() ||
+            numOfTime_log >= logRow.size())
         {
-            std::cout << "Err: LOG data[" << i << "] insufficient columns (size: " << inputData.dataVec[i].size() << ")" << std::endl;
+            std::cout << "Warning: LOG data row " << i << " has insufficient columns" << std::endl;
             continue;
         }
 
+        bool matchFound = false;
+
+        // CSV ë°ì´í„°ì™€ ë§¤ì¹­
         for (int j = 0; j < m_dataSet[SENSOR_GCQ].dataVec.size(); j++)
         {
-            // CSV µ¥ÀÌÅÍ ¹üÀ§ °Ë»ç
-            if (numOfLA_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size() ||
-                numOfSA_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size() ||
-                numOfBSpin_csv >= m_dataSet[SENSOR_GCQ].dataVec[j].size())
+            const auto& csvRow = m_dataSet[SENSOR_GCQ].dataVec[j];
+
+            // CSV ë°ì´í„° ë²”ìœ„ ê²€ì‚¬
+            if (numOfLA_csv >= csvRow.size() ||
+                numOfSA_csv >= csvRow.size() ||
+                numOfBSpin_csv >= csvRow.size())
             {
-                std::cout << "Err: CSV data[" << j << "] insufficient columns (size: " << m_dataSet[SENSOR_GCQ].dataVec[j].size() << ")" << std::endl;
                 continue;
             }
 
-            //bool isSameBS = false;
-            bool isSameLA = false;
-            bool isSameSA = false;
-            bool isSameBSpin = false;
-            bool isSameSS = false;
-
-            try {
-                // º¼ ¹ß»ç°¢ °ª ÀÏÄ¡ ¿©ºÎ È®ÀÎ - ÀÎµ¦½º ¼öÁ¤µÊ!           
-                double dLogVal_la = stof(inputData.dataVec[i][numOfLA_log]);  // LOG ÀÎµ¦½º »ç¿ë
-                double dCsvVal_la = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfLA_csv]);  // CSV ÀÎµ¦½º »ç¿ë
-
-                // ºÎµ¿¼Ò¼öÁ¡¶§¹®¿¡ ¼Ò¼öÁ¡ Ã¹Â°ÀÚ¸® ÇüÅÂ·Î ¸¸µç ÈÄ Á¤¼ö·Î ºñ±³
-                int nCsvVal_la = (int)(round(dCsvVal_la * 10) / 10 * 1000);
-                int nLogVal_la = (int)(round(dLogVal_la * 10) / 10 * 1000);
-
-                if (nCsvVal_la == nLogVal_la)
-                    isSameLA = true;
-
-                // º¼ ¹æÇâ°¢ °ª ÀÏÄ¡ ¿©ºÎ È®ÀÎ            
-                double dLogVal_sa = stof(inputData.dataVec[i][numOfSA_log]);
-                double dCsvVal_sa = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfSA_csv]);
-
-                // ºÎµ¿¼Ò¼öÁ¡¶§¹®¿¡ ¼Ò¼öÁ¡ Ã¹Â°ÀÚ¸® ÇüÅÂ·Î ¸¸µç ÈÄ Á¤¼ö·Î ºñ±³
-                int nCsvVal_sa = (int)(round(dCsvVal_sa * 10) / 10 * 1000);
-                int nLogVal_sa = (int)(round(dLogVal_sa * 10) / 10 * 1000);
-
-                if (nCsvVal_sa == nLogVal_sa)
-                    isSameSA = true;
-
-                // ¹é½ºÇÉ °ª ÀÏÄ¡ ¿©ºÎ È®ÀÎ            
-                double dLogVal_bs = stof(inputData.dataVec[i][numOfBSpin_log]);
-                double dCsvVal_bs = stof(m_dataSet[SENSOR_GCQ].dataVec[j][numOfBSpin_csv]);
-
-                // ºÎµ¿¼Ò¼öÁ¡¶§¹®¿¡ ¼Ò¼öÁ¡ Ã¹Â°ÀÚ¸® ÇüÅÂ·Î ¸¸µç ÈÄ Á¤¼ö·Î ºñ±³
-                int nCsvVal_bs = (int)(round(dCsvVal_bs * 10) / 10 * 1000);
-                int nLogVal_bs = (int)(round(dLogVal_bs * 10) / 10 * 1000);
-
-                if (nCsvVal_bs == nLogVal_bs)
-                    isSameBSpin = true;
-
-            }
-            catch (const std::exception& e) {
-                std::cout << "Err occurred (i=" << i << ", j=" << j << "): " << e.what() << std::endl;
+            // ë¹ˆ ë°ì´í„° ì²´í¬
+            if (logRow[numOfLA_log].empty() || csvRow[numOfLA_csv].empty() ||
+                logRow[numOfSA_log].empty() || csvRow[numOfSA_csv].empty() ||
+                logRow[numOfBSpin_log].empty() || csvRow[numOfBSpin_csv].empty())
+            {
                 continue;
             }
 
-            // ¼¼°³ µ¥ÀÌÅÍ°¡ ¸ğµÎ µ¿ÀÏÇÒ ¶§ ÇØ´ç ½Ã°£ÀÇ µ¥ÀÌÅÍ¸¦ csv¿¡¼­ °¡Á®¿È
-            //if (isSameBS == true && isSameLA == true && isSameSA == true)
-            if (isSameBSpin == true && isSameLA == true && isSameSA == true)
+            try
             {
-                vector<string> tempDataVec = m_dataSet[SENSOR_GCQ].dataVec[j];
+                // ê°’ ë¹„êµ - í—ˆìš© ì˜¤ì°¨ ì„¤ì •
+                double logLA = stod(logRow[numOfLA_log]);
+                double csvLA = stod(csvRow[numOfLA_csv]);
+                double logSA = stod(logRow[numOfSA_log]);
+                double csvSA = stod(csvRow[numOfSA_csv]);
+                double logBS = stod(logRow[numOfBSpin_log]);
+                double csvBS = stod(csvRow[numOfBSpin_csv]);
 
-                // ½Ã°£ Á¤º¸ Ãß°¡ÇÔ               
-                string val = inputData.dataVec[i][numOfDate_log] + "_" + inputData.dataVec[i][numOfTime_log];
-                tempDataVec.insert(tempDataVec.begin(), val);
-                dataVecVec.push_back(tempDataVec);
-                break;
+                // ë°˜ì˜¬ë¦¼í•˜ì—¬ ë¹„êµ (ì†Œìˆ˜ì  ì²«ì§¸ìë¦¬)
+                int logLA_int = (int)round(logLA * 10);
+                int csvLA_int = (int)round(csvLA * 10);
+                int logSA_int = (int)round(logSA * 10);
+                int csvSA_int = (int)round(csvSA * 10);
+                int logBS_int = (int)round(logBS * 10);
+                int csvBS_int = (int)round(csvBS * 10);
+
+                // ë§¤ì¹­ ì¡°ê±´: ì„¸ ê°’ì´ ëª¨ë‘ ì¼ì¹˜
+                if (logLA_int == csvLA_int &&
+                    logSA_int == csvSA_int &&
+                    logBS_int == csvBS_int)
+                {
+                    vector<string> tempDataVec = csvRow;
+
+                    // ì‹œê°„ ì •ë³´ ì¶”ê°€
+                    string dateTime = logRow[numOfDate_log] + "_" + logRow[numOfTime_log];
+                    tempDataVec.insert(tempDataVec.begin(), dateTime);
+
+                    dataVecVec.push_back(tempDataVec);
+                    matchFound = true;
+                    matchedCount++;
+                    break;
+                }
+            }
+            catch (const std::exception& e)
+            {
+                // ë³€í™˜ ì˜¤ë¥˜ëŠ” ë¬´ì‹œí•˜ê³  ê³„ì† ì§„í–‰
+                continue;
+            }
+        }
+
+        if (!matchFound)
+        {
+            unmatchedCount++;
+            if (unmatchedCount <= 5)  // ì²˜ìŒ 5ê°œë§Œ ì¶œë ¥
+            {
+                std::cout << "No match found for LOG entry " << i
+                    << " (LA: " << logRow[numOfLA_log]
+                    << ", SA: " << logRow[numOfSA_log]
+                    << ", BS: " << logRow[numOfBSpin_log] << ")" << std::endl;
             }
         }
     }
 
-    tempDataSet[SENSOR_GCQ].dataVec = dataVecVec;
+    // ê²°ê³¼ ì €ì¥
+    tempDataSet.dataVec = dataVecVec;
+    m_dataSet[SENSOR_GCQ].item = tempDataSet.item;
+    m_dataSet[SENSOR_GCQ].dataVec = tempDataSet.dataVec;
 
-    // ½Ã°£ Ãß°¡ÇÏ¿© µ¥ÀÌÅÍ¸¸ ´Ù½Ã ¿øÀ§Ä¡
-    m_dataSet[SENSOR_GCQ].item = tempDataSet[SENSOR_GCQ].item;
-    m_dataSet[SENSOR_GCQ].dataVec = tempDataSet[SENSOR_GCQ].dataVec;
+    std::cout << "GCQ time synchronization complete:" << std::endl;
+    std::cout << "  Total LOG entries: " << inputData.dataVec.size() << std::endl;
+    std::cout << "  Matched: " << matchedCount << std::endl;
+    std::cout << "  Unmatched: " << unmatchedCount << std::endl;
 }
+
+
 void DataLoader::addTrackManTime()
 {
-    // csv ÆÄÀÏÀÇ item Áß Date À§Ä¡ ÃßÃâ
+    // csv íŒŒì¼ì˜ item ì¤‘ Date ìœ„ì¹˜ ì¶”ì¶œ
     int nCsvTime;
     for (int i = 0; i < m_dataSet[SENSOR_TM].item.size(); i++)
     {
@@ -833,7 +1002,7 @@ void DataLoader::addTrackManTime()
     }
 
 
-    // TrackManÀÇ csv µ¥ÀÌÅÍ¿¡ ½Ã°£ Á¤º¸ Ãß°¡ÇÔ
+    // TrackManì˜ csv ë°ì´í„°ì— ì‹œê°„ ì •ë³´ ì¶”ê°€í•¨
     m_dataSet[SENSOR_TM].item.insert(m_dataSet[SENSOR_TM].item.begin(), "Date-Time");
 
 
@@ -852,7 +1021,7 @@ void DataLoader::addTrackManTime()
             time.erase(find(time.begin(), time.end(), ':'));
 
         
-        //24½Ã°£Á¦·Î º¯°æ
+        //24ì‹œê°„ì œë¡œ ë³€ê²½
         if (ampm == "PM")
         {
             if (stoi(time.substr(0, 2)) == 12)
@@ -877,7 +1046,7 @@ void DataLoader::addTrackManTime()
 
 void DataLoader::addMaxTime()
 {
-    // csv ÆÄÀÏÀÇ item Áß Date À§Ä¡ ÃßÃâ
+    // csv íŒŒì¼ì˜ item ì¤‘ Date ìœ„ì¹˜ ì¶”ì¶œ
     int nCsvTime;
     for (int i = 0; i < m_dataSet[SENSOR_MAX].item.size(); i++)
     {
@@ -886,7 +1055,7 @@ void DataLoader::addMaxTime()
     }
 
 
-    // MaxÀÇ csv µ¥ÀÌÅÍ¿¡ ½Ã°£ Á¤º¸ Ãß°¡ÇÔ
+    // Maxì˜ csv ë°ì´í„°ì— ì‹œê°„ ì •ë³´ ì¶”ê°€í•¨
     m_dataSet[SENSOR_MAX].item.insert(m_dataSet[SENSOR_MAX].item.begin(), "Date-Time");
 
     for (int i = 0; i < m_dataSet[SENSOR_MAX].dataVec.size(); i++)
@@ -909,7 +1078,7 @@ void DataLoader::addMaxTime()
 
 void DataLoader::addWaveTime()
 {
-    // csv ÆÄÀÏÀÇ item Áß Date À§Ä¡ ÃßÃâ
+    // csv íŒŒì¼ì˜ item ì¤‘ Date ìœ„ì¹˜ ì¶”ì¶œ
     int nCsvTime;
     for (int i = 0; i < m_dataSet[SENSOR_WAVE].item.size(); i++)
     {
@@ -918,7 +1087,7 @@ void DataLoader::addWaveTime()
     }
 
 
-    // WaveÀÇ csv µ¥ÀÌÅÍ¿¡ ½Ã°£ Á¤º¸ Ãß°¡ÇÔ
+    // Waveì˜ csv ë°ì´í„°ì— ì‹œê°„ ì •ë³´ ì¶”ê°€í•¨
     m_dataSet[SENSOR_WAVE].item.insert(m_dataSet[SENSOR_WAVE].item.begin(), "Date-Time");
 
     for (int i = 0; i < m_dataSet[SENSOR_WAVE].dataVec.size(); i++)
@@ -941,7 +1110,7 @@ void DataLoader::addWaveTime()
 
 void DataLoader::addNXTime()
 {
-    // csv ÆÄÀÏÀÇ item Áß Date À§Ä¡ ÃßÃâ
+    // csv íŒŒì¼ì˜ item ì¤‘ Date ìœ„ì¹˜ ì¶”ì¶œ
     int nCsvTime;
     for (int i = 0; i < m_dataSet[SENSOR_NX].item.size(); i++)
     {
@@ -950,7 +1119,7 @@ void DataLoader::addNXTime()
     }
 
 
-    // NXÀÇ csv µ¥ÀÌÅÍ¿¡ ½Ã°£ Á¤º¸ Ãß°¡ÇÔ
+    // NXì˜ csv ë°ì´í„°ì— ì‹œê°„ ì •ë³´ ì¶”ê°€í•¨
     m_dataSet[SENSOR_NX].item.insert(m_dataSet[SENSOR_NX].item.begin(), "Date-Time");
 
     for (int i = 0; i < m_dataSet[SENSOR_NX].dataVec.size(); i++)
@@ -972,7 +1141,7 @@ void DataLoader::addNXTime()
 }
 
 void DataLoader::addGRadarTime()
-{ // csv ÆÄÀÏÀÇ item Áß Date À§Ä¡ ÃßÃâ
+{ // csv íŒŒì¼ì˜ item ì¤‘ Date ìœ„ì¹˜ ì¶”ì¶œ
     int nCsvTime;
     for (int i = 0; i < m_dataSet[SENSOR_GRADAR].item.size(); i++)
     {
@@ -981,7 +1150,7 @@ void DataLoader::addGRadarTime()
     }
 
 
-    // GRadarÀÇ csv µ¥ÀÌÅÍ¿¡ ½Ã°£ Á¤º¸ Ãß°¡ÇÔ
+    // GRadarì˜ csv ë°ì´í„°ì— ì‹œê°„ ì •ë³´ ì¶”ê°€í•¨
     m_dataSet[SENSOR_GRADAR].item.insert(m_dataSet[SENSOR_GRADAR].item.begin(), "Date-Time");
 
     for (int i = 0; i < m_dataSet[SENSOR_GRADAR].dataVec.size(); i++)

@@ -21,239 +21,217 @@ void DataMatching::excute()
 
 void DataMatching::matchingWithTime()
 {
-    // 로드 된 데이터셋과 시간으로 매칭후 데이터셋 임시 저장
+    // 로드된 데이터셋과 시간으로 매칭 후 임시 저장
     stShotInfo tempDataSet[SENSOR_TOTALCNT];
+
+    // 헤더 정보 복사
     for (int i = 0; i < SENSOR_TOTALCNT; i++)
     {
         tempDataSet[i].snName = m_dataSet[i].snName;
         tempDataSet[i].item = m_dataSet[i].item;
     }
 
-       
-    int gcqIdx = 0;
-    int waveIdx = 0;
-    int nxIdx = 0;
-    int tmIdx = 0;
-    int maxIdx = 0;
-    int gradarIdx = 0;
+    // 각 센서별 인덱스
+    int sensorIdx[SENSOR_TOTALCNT] = { 0 };
 
-    // 각 센서 데이터 다 읽으면 멈춤
-    bool isGCQEnd = false;
-    bool isWaveEnd = false;
-    bool isNXEnd = false;
-    bool isMaxEnd = false;
-    bool isTmEnd = false;
-    bool isGRadarEnd = false;
+    // 각 센서 데이터 종료 플래그
+    bool sensorEnd[SENSOR_TOTALCNT] = { false };
 
+    // 각 센서별 현재 시간 저장
+    int sensorTimes[SENSOR_TOTALCNT] = { 0 };
 
-    vector<string> initData;
+    int processedRows = 0;
+    int errorCount = 0;
 
-    // 가장 먼저 센싱된 것 찾기
+    // 매칭 프로세스
     while (true)
     {
-        int minTime = 9999999999999999;
-        int gcqTime = 0;
-        int waveTime = 0;
-        int nxTime = 0;
-        int tmTime = 0;
-        int maxTime = 0;
-        int gradarTime = 0;
+        int minTime = INT_MAX;
 
-
-        // 같은 열에 있는 센서 중 가장 빠른 시간 찾기
-        if (m_dataSet[SENSOR_GCQ].dataVec.size() != 0)
+        // 각 센서의 현재 시간 확인
+        for (int sensor = 0; sensor < SENSOR_TOTALCNT; sensor++)
         {
-            if (gcqIdx < m_dataSet[SENSOR_GCQ].dataVec.size())
+            if (!sensorEnd[sensor] && m_dataSet[sensor].dataVec.size() > 0)
             {
-                vector<string> dataStr = m_dataSet[SENSOR_GCQ].dataVec[gcqIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                gcqTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, gcqTime);
+                if (sensorIdx[sensor] < m_dataSet[sensor].dataVec.size())
+                {
+                    const auto& dataRow = m_dataSet[sensor].dataVec[sensorIdx[sensor]];
+
+                    // 데이터가 있고 첫 열(시간)이 비어있지 않은지 확인
+                    if (!dataRow.empty() && !dataRow[0].empty())
+                    {
+                        vector<string> dateTimeStr = split(dataRow[0], "_");
+
+                        if (dateTimeStr.size() >= 2)
+                        {
+                            try
+                            {
+                                // 시간을 정수로 변환
+                                string timeStr = dateTimeStr[1];
+                                // 숫자가 아닌 문자 제거
+                                timeStr.erase(remove_if(timeStr.begin(), timeStr.end(),
+                                    [](char c) { return !isdigit(c); }), timeStr.end());
+
+                                if (!timeStr.empty())
+                                {
+                                    sensorTimes[sensor] = stoi(timeStr);
+                                    minTime = min(minTime, sensorTimes[sensor]);
+                                }
+                                else
+                                {
+                                    std::cout << "Warning: Invalid time format for sensor "
+                                        << sensor << " at row " << sensorIdx[sensor] << std::endl;
+                                    sensorIdx[sensor]++;
+                                    continue;
+                                }
+                            }
+                            catch (const std::exception& e)
+                            {
+                                std::cout << "Error parsing time for sensor " << sensor
+                                    << ": " << e.what() << std::endl;
+                                errorCount++;
+                                sensorIdx[sensor]++;
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            // 시간 형식이 잘못된 경우 건너뛰기
+                            sensorIdx[sensor]++;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        // 빈 데이터인 경우 다음으로
+                        sensorIdx[sensor]++;
+                        continue;
+                    }
+                }
+                else
+                {
+                    sensorEnd[sensor] = true;
+                }
             }
             else
-                isGCQEnd = true;
-        }
-        else
-            isGCQEnd = true;
-
-        if (m_dataSet[SENSOR_TM].dataVec.size() != 0)
-        {
-            if (tmIdx < m_dataSet[SENSOR_TM].dataVec.size())
             {
-                vector<string> dataStr = m_dataSet[SENSOR_TM].dataVec[tmIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                tmTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, tmTime);
+                sensorEnd[sensor] = true;
             }
-            else
-                isTmEnd = true;
         }
-        else
-            isTmEnd = true;
 
-        if (m_dataSet[SENSOR_WAVE].dataVec.size() != 0)
+        // 모든 센서가 종료되었는지 확인
+        bool allEnd = true;
+        for (int i = 0; i < SENSOR_TOTALCNT; i++)
         {
-            if (waveIdx < m_dataSet[SENSOR_WAVE].dataVec.size())
+            if (!sensorEnd[i])
             {
-                vector<string> dataStr = m_dataSet[SENSOR_WAVE].dataVec[waveIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                waveTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, waveTime);
+                allEnd = false;
+                break;
             }
-            else
-                isWaveEnd = true;
         }
-        else
-            isWaveEnd = true;
 
-        if (m_dataSet[SENSOR_MAX].dataVec.size() != 0)
+        if (allEnd || minTime == INT_MAX)
         {
-            if (maxIdx < m_dataSet[SENSOR_MAX].dataVec.size())
-            {
-                vector<string> dataStr = m_dataSet[SENSOR_MAX].dataVec[maxIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                maxTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, maxTime);
-            }
-            else
-                isMaxEnd = true;
+            break;
         }
-        else
-            isMaxEnd = true;
 
-        if (m_dataSet[SENSOR_NX].dataVec.size() != 0)
-        {
-            if (nxIdx < m_dataSet[SENSOR_NX].dataVec.size())
-            {
-                vector<string> dataStr = m_dataSet[SENSOR_NX].dataVec[nxIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                nxTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, nxTime);
-            }
-            else
-                isNXEnd = true;
-        }
-        else
-            isNXEnd = true;
-
-        if (m_dataSet[SENSOR_GRADAR].dataVec.size() != 0)
-        {
-            if (gradarIdx < m_dataSet[SENSOR_GRADAR].dataVec.size())
-            {
-                vector<string> dataStr = m_dataSet[SENSOR_GRADAR].dataVec[gradarIdx];
-                vector<string> dateTimeStr = split(dataStr[0], "_");
-                gradarTime = stoi(dateTimeStr[1]);
-                minTime = min(minTime, gradarTime);
-            }
-            else
-                isGRadarEnd = true;
-        }
-        else
-            isGRadarEnd = true;
-
-
-
-        // diff 초 만큼 더했을 때 60초를 넘어가면 +1분 해야함
+        // 시간 범위 계산 (오버플로우 처리 포함)
         int diffTime = minTime + m_maxDiffSec;
-        //int secOver60 = diffTime % 100;
-        //if (secOver60 >= 60)
-        //{
-        //    diffTime += 100;
-        //    diffTime -= 60;
-        //}
 
-        // 2025-02-07 KJH : 60분을 넘어가면 +1시간 추가.
         // 초 처리 (60초 넘어가면 +1분)
-        int secOver60 = diffTime % 100;
-        if (secOver60 >= 60) {
+        int seconds = diffTime % 100;
+        if (seconds >= 60)
+        {
             diffTime += 100;
             diffTime -= 60;
         }
 
         // 분 처리 (60분 넘어가면 +1시간)
-        int minOver60 = (diffTime / 100) % 100;
-        if (minOver60 >= 60) {
+        int minutes = (diffTime / 100) % 100;
+        if (minutes >= 60)
+        {
             diffTime += 10000;
             diffTime -= 6000;
         }
 
-
-        // 가장 먼저 센싱된 센서의 값 추가
-        if (m_dataSet[SENSOR_WAVE].dataVec.size() != 0)
+        // 각 센서별로 시간 범위에 맞는 데이터 추가
+        for (int sensor = 0; sensor < SENSOR_TOTALCNT; sensor++)
         {
-            if (minTime <= waveTime && waveTime <= diffTime)
-                tempDataSet[SENSOR_WAVE].dataVec.push_back(m_dataSet[SENSOR_WAVE].dataVec[waveIdx++]);
-            else
+            if (m_dataSet[sensor].dataVec.size() > 0)
             {
-                initData.resize(m_dataSet[SENSOR_WAVE].dataVec[0].size());
-                tempDataSet[SENSOR_WAVE].dataVec.push_back(initData);
+                // 센서가 시간 범위 내에 있고 아직 끝나지 않았으면
+                if (!sensorEnd[sensor] &&
+                    sensorTimes[sensor] >= minTime &&
+                    sensorTimes[sensor] <= diffTime)
+                {
+                    tempDataSet[sensor].dataVec.push_back(
+                        m_dataSet[sensor].dataVec[sensorIdx[sensor]++]
+                    );
+                }
+                else
+                {
+                    // 빈 데이터 생성
+                    vector<string> emptyData;
+
+                    // 해당 센서의 적절한 크기로 빈 데이터 생성
+                    size_t dataSize = 0;
+
+                    // 현재 행의 크기 사용
+                    if (!m_dataSet[sensor].dataVec.empty() &&
+                        sensorIdx[sensor] < m_dataSet[sensor].dataVec.size())
+                    {
+                        dataSize = m_dataSet[sensor].dataVec[sensorIdx[sensor]].size();
+                    }
+                    // 이전 행의 크기 사용
+                    else if (!m_dataSet[sensor].dataVec.empty() && sensorIdx[sensor] > 0)
+                    {
+                        dataSize = m_dataSet[sensor].dataVec[sensorIdx[sensor] - 1].size();
+                    }
+                    // 헤더 크기 + 1 사용 (Date-Time 열 포함)
+                    else if (!m_dataSet[sensor].item.empty())
+                    {
+                        dataSize = m_dataSet[sensor].item.size() + 1;
+                    }
+                    // 기본값
+                    else
+                    {
+                        dataSize = 10; // 적절한 기본값
+                    }
+
+                    emptyData.resize(dataSize, "");
+                    tempDataSet[sensor].dataVec.push_back(emptyData);
+                }
             }
         }
 
-        if (m_dataSet[SENSOR_GCQ].dataVec.size() != 0)
+        processedRows++;
+
+        // 진행 상황 표시 (100행마다)
+        if (processedRows % 100 == 0)
         {
-            if (minTime <= gcqTime && gcqTime <= diffTime)
-                tempDataSet[SENSOR_GCQ].dataVec.push_back(m_dataSet[SENSOR_GCQ].dataVec[gcqIdx++]);
-            else
-            {
-                initData.resize(m_dataSet[SENSOR_GCQ].dataVec[0].size());
-                tempDataSet[SENSOR_GCQ].dataVec.push_back(initData);
-            }
+            std::cout << "Processing... " << processedRows << " rows completed" << std::endl;
         }
-
-        if (m_dataSet[SENSOR_TM].dataVec.size() != 0)
-        {
-            if (minTime <= tmTime && tmTime <= diffTime)
-                tempDataSet[SENSOR_TM].dataVec.push_back(m_dataSet[SENSOR_TM].dataVec[tmIdx++]);
-            else
-            {
-                initData.resize(m_dataSet[SENSOR_TM].dataVec[0].size());
-                tempDataSet[SENSOR_TM].dataVec.push_back(initData);
-            }
-        }
-
-        if (m_dataSet[SENSOR_MAX].dataVec.size() != 0)
-        {
-            if (minTime <= maxTime && maxTime <= diffTime)
-                tempDataSet[SENSOR_MAX].dataVec.push_back(m_dataSet[SENSOR_MAX].dataVec[maxIdx++]);
-            else
-            {
-                initData.resize(m_dataSet[SENSOR_MAX].dataVec[0].size());
-                tempDataSet[SENSOR_MAX].dataVec.push_back(initData);
-            }
-        }
-
-        if (m_dataSet[SENSOR_NX].dataVec.size() != 0)
-        {
-            if (minTime <= nxTime && nxTime <= diffTime)
-                tempDataSet[SENSOR_NX].dataVec.push_back(m_dataSet[SENSOR_NX].dataVec[nxIdx++]);
-            else
-            {
-                initData.resize(m_dataSet[SENSOR_NX].dataVec[0].size());
-                tempDataSet[SENSOR_NX].dataVec.push_back(initData);
-            }
-        }
-
-        if (m_dataSet[SENSOR_GRADAR].dataVec.size() != 0)
-        {
-            if (minTime <= gradarTime && gradarTime <= diffTime)
-                tempDataSet[SENSOR_GRADAR].dataVec.push_back(m_dataSet[SENSOR_GRADAR].dataVec[gradarIdx++]);
-            else
-            {
-                initData.resize(m_dataSet[SENSOR_GRADAR].dataVec[0].size());
-                tempDataSet[SENSOR_GRADAR].dataVec.push_back(initData);
-            }
-        }
-
-        if (isGCQEnd && isNXEnd && isMaxEnd && isWaveEnd && isTmEnd && isGRadarEnd)
-            break;
-
     }
 
+    // 결과 저장
     for (int i = 0; i < SENSOR_TOTALCNT; i++)
+    {
         m_dataSet[i].dataVec = tempDataSet[i].dataVec;
+    }
 
+    std::cout << "Time matching complete:" << std::endl;
+    std::cout << "  Total processed rows: " << processedRows << std::endl;
+    std::cout << "  Errors encountered: " << errorCount << std::endl;
 
+    // 각 센서별 결과 요약
+    for (int i = 0; i < SENSOR_TOTALCNT; i++)
+    {
+        if (!m_dataSet[i].dataVec.empty())
+        {
+            std::cout << "  " << m_dataSet[i].snName
+                << ": " << m_dataSet[i].dataVec.size() << " rows" << std::endl;
+        }
+    }
 }
 
 void DataMatching::writeCSV(stShotInfo inputData[SENSOR_TOTALCNT])

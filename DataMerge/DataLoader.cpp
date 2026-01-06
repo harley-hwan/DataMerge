@@ -2,285 +2,478 @@
 #include "DataLoader.h"
 #include <filesystem>
 #include <map>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <dirent.h>
+#endif
 
 namespace fs = std::filesystem;
 
+// ============================================================================
+// TimeInfo 구조체 구현
+// ============================================================================
+
+std::string TimeInfo::toString() const {
+    std::ostringstream oss;
+    oss << std::setfill('0') 
+        << std::setw(4) << year
+        << std::setw(2) << month
+        << std::setw(2) << day << "_"
+        << std::setw(2) << hour
+        << std::setw(2) << minute
+        << std::setw(2) << second;
+    return oss.str();
+}
+
+time_t TimeInfo::toTimeT() const {
+    struct tm timeinfo = {};
+    timeinfo.tm_year = year - 1900;
+    timeinfo.tm_mon = month - 1;
+    timeinfo.tm_mday = day;
+    timeinfo.tm_hour = hour;
+    timeinfo.tm_min = minute;
+    timeinfo.tm_sec = second;
+    timeinfo.tm_isdst = -1;
+    return mktime(&timeinfo);
+}
+
+TimeInfo TimeInfo::fromString(const std::string& dateTime) {
+    TimeInfo info = {};
+    if (dateTime.length() >= 15) {
+        try {
+            info.year = std::stoi(dateTime.substr(0, 4));
+            info.month = std::stoi(dateTime.substr(4, 2));
+            info.day = std::stoi(dateTime.substr(6, 2));
+            info.hour = std::stoi(dateTime.substr(9, 2));
+            info.minute = std::stoi(dateTime.substr(11, 2));
+            info.second = std::stoi(dateTime.substr(13, 2));
+        } catch (...) {
+            // 파싱 실패 시 기본값 유지
+        }
+    }
+    return info;
+}
+
+// ============================================================================
+// DataHelper 네임스페이스 함수 구현
+// ============================================================================
+
+namespace DataHelper {
+    time_t parseDateTime(const std::string& dateTime) {
+        if (dateTime.empty() || dateTime.length() < 15) {
+            return 0;
+        }
+
+        try {
+            // YYYYMMDD_HHMMSS 형식
+            int year = std::stoi(dateTime.substr(0, 4));
+            int month = std::stoi(dateTime.substr(4, 2));
+            int day = std::stoi(dateTime.substr(6, 2));
+            int hour = std::stoi(dateTime.substr(9, 2));
+            int minute = std::stoi(dateTime.substr(11, 2));
+            int second = std::stoi(dateTime.substr(13, 2));
+
+            struct tm timeinfo = {};
+            timeinfo.tm_year = year - 1900;
+            timeinfo.tm_mon = month - 1;
+            timeinfo.tm_mday = day;
+            timeinfo.tm_hour = hour;
+            timeinfo.tm_min = minute;
+            timeinfo.tm_sec = second;
+            timeinfo.tm_isdst = -1;
+
+            return mktime(&timeinfo);
+        }
+        catch (const std::exception&) {
+            return 0;
+        }
+    }
+
+    std::string trim(const std::string& str) {
+        std::string result = str;
+        result.erase(0, result.find_first_not_of(" \t\r\n"));
+        result.erase(result.find_last_not_of(" \t\r\n") + 1);
+        return result;
+    }
+}
+
+// ============================================================================
+// DataLoader 헬퍼 함수들
+// ============================================================================
+
+void DataLoader::logError(const string& message) {
+    m_errorLog.push_back("[ERROR] " + message);
+    std::cout << "[ERROR] " << message << std::endl;
+}
+
+void DataLoader::logWarning(const string& message) {
+    m_warningLog.push_back("[WARNING] " + message);
+    std::cout << "[WARNING] " << message << std::endl;
+}
+
+string DataLoader::sanitizeString(const string& str) {
+    return DataHelper::trim(str);
+}
+
+bool DataLoader::findColumnIndex(const vector<string>& items, const string& columnName, int& outIndex) {
+    for (size_t i = 0; i < items.size(); i++) {
+        string cleanName = sanitizeString(items[i]);
+        if (cleanName == columnName) {
+            outIndex = static_cast<int>(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DataLoader::validateDataRow(const vector<string>& row, size_t expectedSize, 
+                                  const string& sensorName, int rowIndex) {
+    if (row.size() != expectedSize) {
+        logWarning(sensorName + " row " + std::to_string(rowIndex) + 
+                  ": Expected " + std::to_string(expectedSize) + 
+                  " columns, got " + std::to_string(row.size()));
+        return false;
+    }
+    return true;
+}
+
+vector<string> DataLoader::split(string inputStr, string delimiter)
+{
+    vector<string> rtnstr;
+    size_t pos = 0;
+    string token;
+
+    while ((pos = inputStr.find(delimiter)) != string::npos)
+    {
+        token = inputStr.substr(0, pos);
+        rtnstr.push_back(token);
+        inputStr.erase(0, pos + delimiter.length());
+    }
+    rtnstr.push_back(inputStr);
+
+    return rtnstr;
+}
+
+// ============================================================================
+// loadIncludePath - 센서별 폴더가 분리되어 있을 때
+// ============================================================================
+
 void DataLoader::loadIncludePath(string path)
 {
-    // 각 센서마다 폴더 개별 존재할 때 가능
+    std::cout << "\n=== Loading data from path: " << path << " ===" << std::endl;
 
+    // 경로 끝에 백슬래시가 없으면 추가
+    if (!path.empty() && path.back() != '\\' && path.back() != '/')
+        path += "\\";
+
+    // GCQ 폴더 처리
     string gcqPath = path + "GCQ";
-    if (fs::exists(gcqPath) == true)
+    if (fs::exists(gcqPath))
     {
+        std::cout << "Found GCQ folder" << std::endl;
         gcqPath += "\\";
-        string tmpPath = gcqPath + "\\*.*";
+        string tmpPath = gcqPath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open GCQ folder");
+        }
+        else {
+            string gcqLogPath;
+            string gcqCsvPath;
+            
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
+                vector<string> fileStr2 = split(str, " ");
 
-        string gcqLogPath;
-        string gcqCsvPath;
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
-            vector<string> fileStr2 = split(str, " ");
+                string fullPath = gcqPath + fd.name;
+                
+                if (fileStr[0] == GCQLogFile || fileStr1[0] == GCQLogFile)
+                    gcqLogPath = fullPath;
 
-            string fullPath = gcqPath + fd.name;
-            if (fileStr[0] == GCQLogFile)
-                gcqLogPath = fullPath;
-            else if (fileStr1[0] == GCQLogFile)
-                gcqLogPath = fullPath;
+                if (fileStr[0] == GCQCsvFile || fileStr1[0] == GCQCsvFile || fileStr2[0] == GCQCsvFile)
+                    gcqCsvPath = fullPath;
 
-
-            if (fileStr[0] == GCQCsvFile)
-                gcqCsvPath = fullPath;
-            else if (fileStr1[0] == GCQCsvFile)
-                gcqCsvPath = fullPath;
-            else if (fileStr2[0] == GCQCsvFile)
-                gcqCsvPath = fullPath;
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
-        readGCQFile(gcqCsvPath, gcqLogPath);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+            
+            if (!gcqCsvPath.empty() && !gcqLogPath.empty()) {
+                readGCQFile(gcqCsvPath, gcqLogPath);
+            } else {
+                logWarning("GCQ: Required files not found (CSV or LOG)");
+            }
+        }
     }
 
-    string wavePath = path + "WAVE\\";
-    if (fs::exists(wavePath) == true)
+    // WAVE 폴더 처리
+    string wavePath = path + "WAVE";
+    if (fs::exists(wavePath))
     {
-        wavePath += "Result\\";
+        std::cout << "Found WAVE folder" << std::endl;
+        wavePath += "\\Result\\";
         string tmpPath = wavePath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open WAVE Result folder");
+        }
+        else {
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
 
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
+                string fullPath = wavePath + fd.name;
 
-            string fullPath = wavePath + fd.name;
+                if (fileStr[0] == WaveFile || fileStr1[0] == WaveFile)
+                    readWaveFile(fullPath);
 
-            if (fileStr[0] == WaveFile)
-                readWaveFile(fullPath);
-            else if (fileStr1[0] == WaveFile)
-                readWaveFile(fullPath);
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+        }
     }
 
-
+    // TM 폴더 처리
     string tmPath = path + "TM";
-    if (fs::exists(tmPath) == true)
+    if (fs::exists(tmPath))
     {
+        std::cout << "Found TM folder" << std::endl;
         tmPath += "\\";
         string tmpPath = tmPath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open TM folder");
+        }
+        else {
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
+                vector<string> fileStr2 = split(str, " ");
 
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
-            vector<string> fileStr2 = split(str, " ");
+                string fullPath = tmPath + fd.name;
+                
+                if (fileStr[0] == TM4File || fileStr[0] == TM4File1 ||
+                    fileStr1[0] == TM4File || fileStr1[0] == TM4File1 ||
+                    fileStr2[0] == TM4File || fileStr2[0] == TM4File1)
+                    readTrackManFile(fullPath);
 
-            string fullPath = tmPath + fd.name;
-            if (fileStr[0] == TM4File || fileStr[0] == TM4File1)
-                readTrackManFile(fullPath);
-            else if (fileStr1[0] == TM4File || fileStr1[0] == TM4File1)
-                readTrackManFile(fullPath);
-            else if (fileStr2[0] == TM4File || fileStr2[0] == TM4File1)
-                readTrackManFile(fullPath);
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+        }
     }
 
-
-
+    // MAX 폴더 처리
     string maxPath = path + "MAX";
-    if (fs::exists(maxPath) == true)
+    if (fs::exists(maxPath))
     {
+        std::cout << "Found MAX folder" << std::endl;
         maxPath += "\\";
-        string tmpPath = maxPath + "\\*.*";
+        string tmpPath = maxPath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open MAX folder");
+        }
+        else {
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
 
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
+                string fullPath = maxPath + fd.name;
+                
+                if (fileStr[0] == MaxFile || fileStr1[0] == MaxFile)
+                    readMaxFile(fullPath);
 
-            string fullPath = maxPath + fd.name;
-            if (fileStr[0] == MaxFile)
-                readMaxFile(fullPath);
-            else if (fileStr1[0] == MaxFile)
-                readMaxFile(fullPath);
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+        }
     }
 
-
-
+    // NX 폴더 처리
     string nxPath = path + "NX";
-    if (fs::exists(nxPath) == true)
+    if (fs::exists(nxPath))
     {
+        std::cout << "Found NX folder" << std::endl;
         nxPath += "\\";
-        string tmpPath = nxPath + "\\*.*";
+        string tmpPath = nxPath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open NX folder");
+        }
+        else {
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
 
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
+                string fullPath = nxPath + fd.name;
+                
+                if (fileStr[0] == NXFile || fileStr1[0] == NXFile)
+                    readNXFile(fullPath);
 
-            string fullPath = nxPath + fd.name;
-            if (fileStr[0] == NXFile)
-                readNXFile(fullPath);
-            else if (fileStr1[0] == NXFile)
-                readNXFile(fullPath);
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+        }
     }
 
-
-
-    string gradarPath = path + "GRADAR\\";
-    if (fs::exists(gradarPath) == true)
+    // GRADAR 폴더 처리
+    string gradarPath = path + "GRADAR";
+    if (fs::exists(gradarPath))
     {
-        gradarPath += "Result\\";
+        std::cout << "Found GRADAR folder" << std::endl;
+        gradarPath += "\\Result\\";
         string tmpPath = gradarPath + "*.*";
         struct _finddata_t fd;
         intptr_t handle;
 
-        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L)
-            return;
+        if ((handle = _findfirst(tmpPath.c_str(), &fd)) == -1L) {
+            logWarning("Cannot open GRADAR Result folder");
+        }
+        else {
+            do
+            {
+                string str = fd.name;
+                vector<string> fileStr = split(str, "_");
+                vector<string> fileStr1 = split(str, ".");
 
-        do
-        {
-            string str = fd.name;
-            vector<string> fileStr = split(str, "_");
-            vector<string> fileStr1 = split(str, ".");
+                string fullPath = gradarPath + fd.name;
+                
+                if (fileStr[0] == GRadarFile || fileStr1[0] == GRadarFile)
+                    readGRadarFile(fullPath);
 
-            string fullPath = gradarPath + fd.name;
-            if (fileStr[0] == GRadarFile)
-                readGRadarFile(fullPath);
-            else if (fileStr1[0] == GRadarFile)
-                readGRadarFile(fullPath);
-
-        } while (_findnext(handle, &fd) == 0);
-        _findclose(handle);
+            } while (_findnext(handle, &fd) == 0);
+            _findclose(handle);
+        }
     }
 
-    m_dataSet;
-    int bb = 0;
+    std::cout << "=== Data loading complete ===" << std::endl;
 }
+
+// ============================================================================
+// loadIncludePath_v1 - 모든 파일이 한 폴더에 있을 때
+// ============================================================================
 
 void DataLoader::loadIncludePath_v1(string path)
 {
+    std::cout << "\n=== Loading data from single path: " << path << " ===" << std::endl;
+
+    // 경로 끝에 백슬래시가 없으면 추가
+    if (!path.empty() && path.back() != '\\' && path.back() != '/')
+        path += "\\";
+
     string inputPath = path + "*.*";
     struct _finddata_t fd;
     intptr_t handle;
 
-    if ((handle = _findfirst(inputPath.c_str(), &fd)) == -1L)
+    if ((handle = _findfirst(inputPath.c_str(), &fd)) == -1L) {
+        logError("Cannot open path: " + path);
         return;
+    }
 
     string gcqLogPath;
     string gcqCsvPath;
+    
     do
     {
         string str = fd.name;
         vector<string> fileStr = split(str, "_");
         vector<string> fileStr1 = split(str, ".");
 
-
         string fullPath = path + fd.name;
-        if (fileStr[0] == GCQLogFile)
-            gcqLogPath = fullPath;
-        else if (fileStr1[0] == GCQLogFile)
+        
+        // GCQ 파일들
+        if (fileStr[0] == GCQLogFile || fileStr1[0] == GCQLogFile)
             gcqLogPath = fullPath;
 
-
-        if (fileStr[0] == GCQCsvFile)
-            gcqCsvPath = fullPath;
-        else if (fileStr1[0] == GCQCsvFile)
+        if (fileStr[0] == GCQCsvFile || fileStr1[0] == GCQCsvFile)
             gcqCsvPath = fullPath;
 
-        if (fileStr[0] == TM4File)
-            readTrackManFile(fullPath);
-        else if (fileStr1[0] == TM4File)
+        // TrackMan 파일
+        if (fileStr[0] == TM4File || fileStr1[0] == TM4File ||
+            fileStr[0] == TM4File1 || fileStr1[0] == TM4File1)
             readTrackManFile(fullPath);
 
-        if (fileStr[0] == WaveFile)
-            readWaveFile(fullPath);
-        else if (fileStr1[0] == WaveFile)
+        // Wave 파일
+        if (fileStr[0] == WaveFile || fileStr1[0] == WaveFile)
             readWaveFile(fullPath);
 
-        if (fileStr[0] == MaxFile)
-            readMaxFile(fullPath);
-        else if (fileStr1[0] == MaxFile)
+        // MAX 파일
+        if (fileStr[0] == MaxFile || fileStr1[0] == MaxFile)
             readMaxFile(fullPath);
 
-        if (fileStr[0] == NXFile)
-            readNXFile(fullPath);
-        else if (fileStr1[0] == NXFile)
+        // NX 파일
+        if (fileStr[0] == NXFile || fileStr1[0] == NXFile)
             readNXFile(fullPath);
 
-        if (fileStr[0] == GRadarFile)
+        // GRadar 파일
+        if (fileStr[0] == GRadarFile || fileStr1[0] == GRadarFile)
             readGRadarFile(fullPath);
-        else if (fileStr1[0] == GRadarFile)
-            readGRadarFile(fullPath);
-
         
     } while (_findnext(handle, &fd) == 0);
     _findclose(handle);
 
-    readGCQFile(gcqCsvPath, gcqLogPath);
+    // GCQ 파일 읽기 (CSV와 LOG 모두 필요)
+    if (!gcqCsvPath.empty() && !gcqLogPath.empty()) {
+        readGCQFile(gcqCsvPath, gcqLogPath);
+    } else {
+        if (!gcqCsvPath.empty() || !gcqLogPath.empty()) {
+            logWarning("GCQ: Both CSV and LOG files are required");
+        }
+    }
 
+    std::cout << "=== Data loading complete ===" << std::endl;
 }
+
+// ============================================================================
+// readGCQFile - GCQ CSV 및 LOG 파일 읽기
+// ============================================================================
 
 void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
 {
+    std::cout << "\n--- Reading GCQ files ---" << std::endl;
+    std::cout << "CSV: " << csvFilePath << std::endl;
+    std::cout << "LOG: " << logFilePath << std::endl;
+
     string line;
     std::ifstream csvFile(csvFilePath);
-    if (true == csvFile.fail())
+    if (csvFile.fail())
     {
-        std::cout << "Failed to open CSV file: " << csvFilePath << std::endl;
+        logError("Failed to open GCQ CSV file: " + csvFilePath);
         return;
     }
 
     std::ifstream logFile(logFilePath);
-    if (true == logFile.fail())
+    if (logFile.fail())
     {
-        std::cout << "Failed to open LOG file: " << logFilePath << std::endl;
+        logError("Failed to open GCQ LOG file: " + logFilePath);
+        csvFile.close();
         return;
     }
 
     m_dataSet[SENSOR_GCQ].snName = "GCQ";
 
-    // CSV 파일 읽으면서 데이터 추출
+    // CSV 파일 읽기
     bool headerFound = false;
     size_t expectedColumns = 0;
 
@@ -295,13 +488,9 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
             line = line.substr(3);
         }
 
-        // 맨 윗줄 데이터 이름만 추출
+        // 헤더 찾기
         if (!headerFound && line.find("Foresight") != string::npos)
         {
-            // 공백 제거
-            string cleanLine = line;
-            cleanLine.erase(remove(cleanLine.begin(), cleanLine.end(), ' '), cleanLine.end());
-
             vector<string> itemVec = split(line, ",");
 
             // 빈 항목 제거 및 정리
@@ -318,10 +507,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
                     }
                 }
 
-                // 공백 제거
-                string trimmed = itemVec[i];
-                trimmed.erase(0, trimmed.find_first_not_of(" \t\r\n"));
-                trimmed.erase(trimmed.find_last_not_of(" \t\r\n") + 1);
+                string trimmed = sanitizeString(itemVec[i]);
 
                 if (!trimmed.empty())
                 {
@@ -340,8 +526,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
         // 단위 행이나 다른 메타데이터 스킵
         if (line.find("M/S") != string::npos ||
             line.find("Average") != string::npos ||
-            line.find("Std.") != string::npos ||
-            line.find("��") != string::npos)  // 한글 단위 표시
+            line.find("Std.") != string::npos)
         {
             continue;
         }
@@ -352,7 +537,6 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
             continue;
         }
 
-        // 데이터 부분만 추출
         // 따옴표 제거
         line.erase(remove(line.begin(), line.end(), '\"'), line.end());
 
@@ -362,56 +546,45 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
         bool hasData = false;
         for (const auto& data : dataVec)
         {
-            if (!data.empty() && data != " ")
+            string trimmedData = sanitizeString(data);
+            if (!trimmedData.empty())
             {
                 hasData = true;
                 break;
             }
         }
 
-        if (!hasData || dataVec.empty() || dataVec[0].empty())
+        if (!hasData)
         {
             continue;
         }
 
-        // 열 개수 정규화 - 헤더가 설정된 경우에만
+        // 열 개수 정규화
         if (expectedColumns > 0)
         {
-            // 열이 부족한 경우 빈 문자열로 채움
             while (dataVec.size() < expectedColumns)
             {
                 dataVec.push_back("");
             }
 
-            // 열이 초과하는 경우 잘라냄
             if (dataVec.size() > expectedColumns)
             {
                 dataVec.resize(expectedColumns);
-                std::cout << "Warning: Row has " << dataVec.size()
-                    << " columns, expected " << expectedColumns
-                    << ". Extra columns removed." << std::endl;
             }
         }
 
         m_dataSet[SENSOR_GCQ].dataVec.push_back(dataVec);
     }
 
+    csvFile.close();
     std::cout << "GCQ CSV loaded: " << m_dataSet[SENSOR_GCQ].dataVec.size() << " data rows" << std::endl;
 
     // LOG 파일 처리
     stShotInfo logDataSet;
     logDataSet.snName = "GCQlog";
 
-    // log 데이터 항목
-    vector<string> logItemVec;
-    logItemVec.push_back("Date");
-    logItemVec.push_back("Time");
-    logItemVec.push_back("BallSpeed");
-    logItemVec.push_back("LaunchAngle");
-    logItemVec.push_back("BallDirection");
-    logItemVec.push_back("BackSpin");
-    logItemVec.push_back("SideSpin");
-    logItemVec.push_back("TotalSpin");
+    vector<string> logItemVec = {"Date", "Time", "BallSpeed", "LaunchAngle", 
+                                  "BallDirection", "BackSpin", "SideSpin", "TotalSpin"};
     logDataSet.item = logItemVec;
 
     bool isSpinInfo = false;
@@ -419,7 +592,6 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
     vector<string> dataVec;
     vector<vector<string>> dataVecVec;
 
-    // LOG 파일 읽으면서 데이터 추출
     while (getline(logFile, line))
     {
         // 제어 문자 제거
@@ -461,9 +633,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
                     vector<string> datastr = split(line, "=");
                     if (datastr.size() >= 2)
                     {
-                        string value = datastr[1];
-                        value.erase(0, value.find_first_not_of(" \t"));
-                        value.erase(value.find_last_not_of(" \t") + 1);
+                        string value = sanitizeString(datastr[1]);
                         dataVec.push_back(value);
                     }
                 }
@@ -477,9 +647,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
             vector<string> datastr = split(line, "=");
             if (datastr.size() >= 2)
             {
-                string value = datastr[1];
-                value.erase(0, value.find_first_not_of(" \t"));
-                value.erase(value.find_last_not_of(" \t") + 1);
+                string value = sanitizeString(datastr[1]);
                 dataVec.push_back(value);
             }
             continue;
@@ -491,9 +659,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
             vector<string> datastr = split(line, "=");
             if (datastr.size() >= 2)
             {
-                string value = datastr[1];
-                value.erase(0, value.find_first_not_of(" \t"));
-                value.erase(value.find_last_not_of(" \t") + 1);
+                string value = sanitizeString(datastr[1]);
                 dataVec.push_back(value);
             }
             continue;
@@ -513,9 +679,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
                 vector<string> datastr = split(line, "=");
                 if (datastr.size() >= 2)
                 {
-                    string value = datastr[1];
-                    value.erase(0, value.find_first_not_of(" \t"));
-                    value.erase(value.find_last_not_of(" \t") + 1);
+                    string value = sanitizeString(datastr[1]);
                     dataVec.push_back(value);
                 }
                 continue;
@@ -527,9 +691,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
                 vector<string> datastr = split(line, "=");
                 if (datastr.size() >= 2)
                 {
-                    string value = datastr[1];
-                    value.erase(0, value.find_first_not_of(" \t"));
-                    value.erase(value.find_last_not_of(" \t") + 1);
+                    string value = sanitizeString(datastr[1]);
                     dataVec.push_back(value);
                 }
                 continue;
@@ -541,13 +703,10 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
                 vector<string> dataStr = split(line, "=");
                 if (dataStr.size() >= 2)
                 {
-                    string value = dataStr[1];
-                    value.erase(0, value.find_first_not_of(" \t"));
-                    value.erase(value.find_last_not_of(" \t") + 1);
+                    string value = sanitizeString(dataStr[1]);
                     dataVec.push_back(value);
 
-                    // 데이터가 완성되었는지 확인
-                    if (dataVec.size() >= 8)  // 모든 필드가 채워졌는지
+                    if (dataVec.size() >= 8)
                     {
                         dataVecVec.push_back(dataVec);
                     }
@@ -560,6 +719,7 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
         }
     }
 
+    logFile.close();
     logDataSet.dataVec = dataVecVec;
     std::cout << "GCQ LOG loaded: " << logDataSet.dataVec.size() << " data entries" << std::endl;
 
@@ -567,31 +727,42 @@ void DataLoader::readGCQFile(string csvFilePath, string logFilePath)
     addGCQTime(logDataSet);
 }
 
+// ============================================================================
+// 나머지 read 함수들 (TrackMan, Wave, MAX, NX, GRadar)
+// ============================================================================
+
 void DataLoader::readTrackManFile(string csvFilePath)
 {
+    std::cout << "\n--- Reading TrackMan file ---" << std::endl;
+    std::cout << "File: " << csvFilePath << std::endl;
+
     string line;
     std::ifstream file(csvFilePath);
-    if (true == file.fail())
+    if (file.fail())
+    {
+        logError("Failed to open TrackMan file: " + csvFilePath);
         return;
+    }
 
     string fileInfo = csvFilePath.substr(csvFilePath.length() - 3, 3);
     if (fileInfo != "csv")
+    {
+        logWarning("TrackMan file is not CSV format");
+        file.close();
         return;
+    }
 
     m_dataSet[SENSOR_TM].snName = "TM4";
 
-    // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
     {
         if (line.find("sep=,") != string::npos)
             continue;
 
-        // 맨 윗줄 데이터 이름만 추출
+        // 헤더 행
         if (line.find("Date") != string::npos)
         {
-            for (int i = 0; i < line.length(); i++)
-                line.erase(find(line.begin(), line.end(), ' '));
-
+            line.erase(remove(line.begin(), line.end(), ' '), line.end());
             m_dataSet[SENSOR_TM].item = split(line, ",");
             continue;
         }
@@ -599,158 +770,794 @@ void DataLoader::readTrackManFile(string csvFilePath)
         if (line.find("m/s") != string::npos)
             continue;
 
-        // 데이터 부분만 추출
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        // 따옴표 제거
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
+
+        // 빈 줄 스킵
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+            continue;
 
         vector<string> dataStr = split(line, ",");
-        m_dataSet[SENSOR_TM].dataVec.push_back(dataStr);
+        
+        if (!dataStr.empty() && !sanitizeString(dataStr[0]).empty())
+        {
+            m_dataSet[SENSOR_TM].dataVec.push_back(dataStr);
+        }
     }
+
+    file.close();
+    std::cout << "TrackMan CSV loaded: " << m_dataSet[SENSOR_TM].dataVec.size() << " data rows" << std::endl;
 }
 
 void DataLoader::readWaveFile(string csvFilePath)
 {
+    std::cout << "\n--- Reading Wave file ---" << std::endl;
+    std::cout << "File: " << csvFilePath << std::endl;
+
     string line;
     std::ifstream file(csvFilePath);
-    if (true == file.fail())
+    if (file.fail())
+    {
+        logError("Failed to open Wave file: " + csvFilePath);
         return;
+    }
 
     string fileInfo = csvFilePath.substr(csvFilePath.length() - 3, 3);
     if (fileInfo != "csv")
+    {
+        logWarning("Wave file is not CSV format");
+        file.close();
         return;
+    }
 
     m_dataSet[SENSOR_WAVE].snName = "Wave";
 
-    // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
     {
-        // 맨 윗줄 데이터 이름만 추출
         if (line.find("Name") != string::npos)
         {
-            for (int i = 0; i < line.length(); i++)
-                line.erase(find(line.begin(), line.end(), ' '));
-
+            line.erase(remove(line.begin(), line.end(), ' '), line.end());
             m_dataSet[SENSOR_WAVE].item = split(line, ",");
             continue;
         }
 
-        // 데이터 부분만 추출
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
+
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+            continue;
 
         vector<string> dataStr = split(line, ",");
-        m_dataSet[SENSOR_WAVE].dataVec.push_back(dataStr);
+        
+        if (!dataStr.empty() && !sanitizeString(dataStr[0]).empty())
+        {
+            m_dataSet[SENSOR_WAVE].dataVec.push_back(dataStr);
+        }
     }
+
+    file.close();
+    std::cout << "Wave CSV loaded: " << m_dataSet[SENSOR_WAVE].dataVec.size() << " data rows" << std::endl;
 }
 
 void DataLoader::readMaxFile(string csvFilePath)
 {
+    std::cout << "\n--- Reading MAX file ---" << std::endl;
+    std::cout << "File: " << csvFilePath << std::endl;
+
     string line;
     std::ifstream file(csvFilePath);
-    if (true == file.fail())
+    if (file.fail())
+    {
+        logError("Failed to open MAX file: " + csvFilePath);
         return;
+    }
 
     string fileInfo = csvFilePath.substr(csvFilePath.length() - 3, 3);
     if (fileInfo != "csv")
+    {
+        logWarning("MAX file is not CSV format");
+        file.close();
         return;
+    }
 
     m_dataSet[SENSOR_MAX].snName = "Max";
 
-    // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
     {
-        // 맨 윗줄 데이터 이름만 추출
         if (line.find("Shot ID") != string::npos)
         {
-            for (int i = 0; i < line.length(); i++)
-                line.erase(find(line.begin(), line.end(), ' '));
-
+            line.erase(remove(line.begin(), line.end(), ' '), line.end());
             m_dataSet[SENSOR_MAX].item = split(line, ",");
             continue;
         }
 
-        // 데이터 부분만 추출
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
+
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+            continue;
 
         vector<string> dataStr = split(line, ",");
-        m_dataSet[SENSOR_MAX].dataVec.push_back(dataStr);
+        
+        if (!dataStr.empty() && !sanitizeString(dataStr[0]).empty())
+        {
+            m_dataSet[SENSOR_MAX].dataVec.push_back(dataStr);
+        }
     }
+
+    file.close();
+    std::cout << "MAX CSV loaded: " << m_dataSet[SENSOR_MAX].dataVec.size() << " data rows" << std::endl;
 }
 
 void DataLoader::readNXFile(string csvFilePath)
 {
+    std::cout << "\n--- Reading NX file ---" << std::endl;
+    std::cout << "File: " << csvFilePath << std::endl;
+
     string line;
     std::ifstream file(csvFilePath);
-    if (true == file.fail())
+    if (file.fail())
+    {
+        logError("Failed to open NX file: " + csvFilePath);
         return;
+    }
 
     string fileInfo = csvFilePath.substr(csvFilePath.length() - 3, 3);
     if (fileInfo != "csv")
+    {
+        logWarning("NX file is not CSV format");
+        file.close();
         return;
+    }
 
     m_dataSet[SENSOR_NX].snName = "NX";
 
-    // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
     {
         if (line.find("NXSensor") != string::npos)
             continue;
 
-        // 맨 윗줄 데이터 이름만 추출
         if (line.find("ShotDB") != string::npos)
         {
             m_dataSet[SENSOR_NX].item = split(line, ",");
             continue;
         }
 
-        // 데이터 부분만 추출
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
+
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+            continue;
 
         vector<string> dataStr = split(line, ",");
-        m_dataSet[SENSOR_NX].dataVec.push_back(dataStr);
+        
+        if (!dataStr.empty() && !sanitizeString(dataStr[0]).empty())
+        {
+            m_dataSet[SENSOR_NX].dataVec.push_back(dataStr);
+        }
     }
+
+    file.close();
+    std::cout << "NX CSV loaded: " << m_dataSet[SENSOR_NX].dataVec.size() << " data rows" << std::endl;
 }
 
 void DataLoader::readGRadarFile(string csvFilePath)
 {
+    std::cout << "\n--- Reading GRadar file ---" << std::endl;
+    std::cout << "File: " << csvFilePath << std::endl;
+
     string line;
     std::ifstream file(csvFilePath);
-    if (true == file.fail())
+    if (file.fail())
+    {
+        logError("Failed to open GRadar file: " + csvFilePath);
         return;
+    }
     
     string fileInfo = csvFilePath.substr(csvFilePath.length() - 3, 3);
     if (fileInfo != "csv")
+    {
+        logWarning("GRadar file is not CSV format");
+        file.close();
         return;
+    }
 
     m_dataSet[SENSOR_GRADAR].snName = "GRadar";
 
-    // csv 파일 읽으면서 데이터 추출
     while (std::getline(file, line))
     {
-        // 맨 윗줄 데이터 이름만 추출
         if (line.find("Name") != string::npos)
         {
-            for (int i = 0; i < line.length(); i++)
-                line.erase(find(line.begin(), line.end(), ' '));
-
+            line.erase(remove(line.begin(), line.end(), ' '), line.end());
             m_dataSet[SENSOR_GRADAR].item = split(line, ",");
             continue;
         }
 
-        // 데이터 부분만 추출
-        for (int i = 0; i < line.length(); i++)
-            line.erase(find(line.begin(), line.end(), '\"'));
+        line.erase(remove(line.begin(), line.end(), '\"'), line.end());
+
+        if (line.empty() || line.find_first_not_of(" ,\t\r\n") == string::npos)
+            continue;
 
         vector<string> dataStr = split(line, ",");
-        m_dataSet[SENSOR_GRADAR].dataVec.push_back(dataStr);
+        
+        if (!dataStr.empty() && !sanitizeString(dataStr[0]).empty())
+        {
+            m_dataSet[SENSOR_GRADAR].dataVec.push_back(dataStr);
+        }
+    }
+
+    file.close();
+    std::cout << "GRadar CSV loaded: " << m_dataSet[SENSOR_GRADAR].dataVec.size() << " data rows" << std::endl;
+}
+
+// ============================================================================
+// addGCQTime - GCQ 데이터에 시간 정보 추가
+// ============================================================================
+
+void DataLoader::addGCQTime(stShotInfo inputData)
+{
+    std::cout << "\n--- Adding GCQ time information ---" << std::endl;
+
+    if (m_dataSet[SENSOR_GCQ].dataVec.empty() || inputData.dataVec.empty())
+    {
+        logWarning("GCQ CSV or LOG data is empty. Skipping time synchronization.");
+        return;
+    }
+
+    std::map<string, int> csvColumnMap;
+    std::map<string, int> logColumnMap;
+
+    for (size_t i = 0; i < m_dataSet[SENSOR_GCQ].item.size(); i++)
+    {
+        string colName = sanitizeString(m_dataSet[SENSOR_GCQ].item[i]);
+        csvColumnMap[colName] = static_cast<int>(i);
+    }
+
+    for (size_t i = 0; i < inputData.item.size(); i++)
+    {
+        logColumnMap[inputData.item[i]] = static_cast<int>(i);
+    }
+
+    int numOfLA_csv = -1, numOfSA_csv = -1, numOfBSpin_csv = -1;
+
+    for (const auto& pair : csvColumnMap)
+    {
+        string lowerCol = pair.first;
+        transform(lowerCol.begin(), lowerCol.end(), lowerCol.begin(), ::tolower);
+
+        if (lowerCol.find("launch") != string::npos && lowerCol.find("angle") != string::npos)
+            numOfLA_csv = pair.second;
+        else if (lowerCol.find("side") != string::npos && lowerCol.find("angle") != string::npos)
+            numOfSA_csv = pair.second;
+        else if (lowerCol.find("backspin") != string::npos)
+            numOfBSpin_csv = pair.second;
+    }
+
+    if (numOfLA_csv == -1 && csvColumnMap.find("LaunchAngle") != csvColumnMap.end())
+        numOfLA_csv = csvColumnMap["LaunchAngle"];
+    if (numOfSA_csv == -1 && csvColumnMap.find("SideAngle") != csvColumnMap.end())
+        numOfSA_csv = csvColumnMap["SideAngle"];
+    if (numOfBSpin_csv == -1 && csvColumnMap.find("Backspin") != csvColumnMap.end())
+        numOfBSpin_csv = csvColumnMap["Backspin"];
+
+    int numOfLA_log = logColumnMap.count("LaunchAngle") ? logColumnMap["LaunchAngle"] : -1;
+    int numOfSA_log = logColumnMap.count("BallDirection") ? logColumnMap["BallDirection"] : -1;
+    int numOfBSpin_log = logColumnMap.count("BackSpin") ? logColumnMap["BackSpin"] : -1;
+    int numOfDate_log = logColumnMap.count("Date") ? logColumnMap["Date"] : -1;
+    int numOfTime_log = logColumnMap.count("Time") ? logColumnMap["Time"] : -1;
+
+    if (numOfLA_csv == -1 || numOfSA_csv == -1 || numOfBSpin_csv == -1)
+    {
+        logError("Required columns not found in GCQ CSV file");
+        return;
+    }
+
+    if (numOfLA_log == -1 || numOfSA_log == -1 || numOfBSpin_log == -1 ||
+        numOfDate_log == -1 || numOfTime_log == -1)
+    {
+        logError("Required columns not found in GCQ LOG file");
+        return;
+    }
+
+    stShotInfo tempDataSet;
+    tempDataSet.item = m_dataSet[SENSOR_GCQ].item;
+    tempDataSet.item.insert(tempDataSet.item.begin(), "Date-Time");
+
+    vector<vector<string>> dataVecVec;
+    int matchedCount = 0;
+    int unmatchedCount = 0;
+
+    for (size_t i = 0; i < inputData.dataVec.size(); i++)
+    {
+        const auto& logRow = inputData.dataVec[i];
+        if (static_cast<size_t>(numOfLA_log) >= logRow.size() ||
+            static_cast<size_t>(numOfSA_log) >= logRow.size() ||
+            static_cast<size_t>(numOfBSpin_log) >= logRow.size() ||
+            static_cast<size_t>(numOfDate_log) >= logRow.size() ||
+            static_cast<size_t>(numOfTime_log) >= logRow.size())
+        {
+            logWarning("LOG data row " + std::to_string(i) + " has insufficient columns");
+            continue;
+        }
+
+        bool matchFound = false;
+
+        for (size_t j = 0; j < m_dataSet[SENSOR_GCQ].dataVec.size(); j++)
+        {
+            const auto& csvRow = m_dataSet[SENSOR_GCQ].dataVec[j];
+
+            if (static_cast<size_t>(numOfLA_csv) >= csvRow.size() ||
+                static_cast<size_t>(numOfSA_csv) >= csvRow.size() ||
+                static_cast<size_t>(numOfBSpin_csv) >= csvRow.size())
+            {
+                continue;
+            }
+
+            if (logRow[numOfLA_log].empty() || csvRow[numOfLA_csv].empty() ||
+                logRow[numOfSA_log].empty() || csvRow[numOfSA_csv].empty() ||
+                logRow[numOfBSpin_log].empty() || csvRow[numOfBSpin_csv].empty())
+            {
+                continue;
+            }
+
+            try
+            {
+                double logLA = stod(logRow[numOfLA_log]);
+                double csvLA = stod(csvRow[numOfLA_csv]);
+                double logSA = stod(logRow[numOfSA_log]);
+                double csvSA = stod(csvRow[numOfSA_csv]);
+                double logBS = stod(logRow[numOfBSpin_log]);
+                double csvBS = stod(csvRow[numOfBSpin_csv]);
+
+                int logLA_int = static_cast<int>(round(logLA * 10));
+                int csvLA_int = static_cast<int>(round(csvLA * 10));
+                int logSA_int = static_cast<int>(round(logSA * 10));
+                int csvSA_int = static_cast<int>(round(csvSA * 10));
+                int logBS_int = static_cast<int>(round(logBS * 10));
+                int csvBS_int = static_cast<int>(round(csvBS * 10));
+
+                if (logLA_int == csvLA_int &&
+                    logSA_int == csvSA_int &&
+                    logBS_int == csvBS_int)
+                {
+                    vector<string> tempDataVec = csvRow;
+                    string dateTime = logRow[numOfDate_log] + "_" + logRow[numOfTime_log];
+                    tempDataVec.insert(tempDataVec.begin(), dateTime);
+                    dataVecVec.push_back(tempDataVec);
+                    matchFound = true;
+                    matchedCount++;
+                    break;
+                }
+            }
+            catch (const std::exception&)
+            {
+                continue;
+            }
+        }
+
+        if (!matchFound)
+        {
+            unmatchedCount++;
+            if (unmatchedCount <= 5)
+            {
+                std::cout << "No match found for LOG entry " << i
+                    << " (LA: " << logRow[numOfLA_log]
+                    << ", SA: " << logRow[numOfSA_log]
+                    << ", BS: " << logRow[numOfBSpin_log] << ")" << std::endl;
+            }
+        }
+    }
+
+    tempDataSet.dataVec = dataVecVec;
+    m_dataSet[SENSOR_GCQ].item = tempDataSet.item;
+    m_dataSet[SENSOR_GCQ].dataVec = tempDataSet.dataVec;
+
+    std::cout << "GCQ time synchronization complete:" << std::endl;
+    std::cout << "  Total LOG entries: " << inputData.dataVec.size() << std::endl;
+    std::cout << "  Matched: " << matchedCount << std::endl;
+    std::cout << "  Unmatched: " << unmatchedCount << std::endl;
+}
+
+// ============================================================================
+// addTrackManTime - TrackMan 데이터에 시간 정보 추가
+// ============================================================================
+
+void DataLoader::addTrackManTime()
+{
+    std::cout << "\n--- Adding TrackMan time information ---" << std::endl;
+
+    try {
+        int nCsvTime = -1;
+        if (!findColumnIndex(m_dataSet[SENSOR_TM].item, "Date", nCsvTime)) {
+            logError("TrackMan: 'Date' column not found");
+            return;
+        }
+
+        std::cout << "TrackMan: Date column found at index " << nCsvTime << std::endl;
+
+        m_dataSet[SENSOR_TM].item.insert(m_dataSet[SENSOR_TM].item.begin(), "Date-Time");
+
+        int successCount = 0;
+        int failCount = 0;
+
+        for (size_t i = 0; i < m_dataSet[SENSOR_TM].dataVec.size(); i++)
+        {
+            try {
+                vector<string>& dataRow = m_dataSet[SENSOR_TM].dataVec[i];
+                
+                if (nCsvTime >= static_cast<int>(dataRow.size())) {
+                    logWarning("TrackMan row " + std::to_string(i) + ": Date column index out of range");
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string val = sanitizeString(dataRow[nCsvTime]);
+                
+                if (val.empty()) {
+                    logWarning("TrackMan row " + std::to_string(i) + ": Empty date value");
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                vector<string> strVec = split(val, " ");
+                
+                if (strVec.size() < 3) {
+                    logWarning("TrackMan row " + std::to_string(i) + 
+                              ": Invalid date format (expected 'YYYY-MM-DD AM/PM HH:MM:SS'): " + val);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string dateStr = strVec[0];
+                string ampm = strVec[1];
+                string timeStr = strVec[2];
+
+                vector<string> dateVec = split(dateStr, "-");
+                if (dateVec.size() != 3) {
+                    logWarning("TrackMan row " + std::to_string(i) + ": Invalid date format: " + dateStr);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string date = dateVec[0] + dateVec[1] + dateVec[2];
+
+                vector<string> timeVec = split(timeStr, ":");
+                if (timeVec.size() != 3) {
+                    logWarning("TrackMan row " + std::to_string(i) + ": Invalid time format: " + timeStr);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                int hour = std::stoi(timeVec[0]);
+                int minute = std::stoi(timeVec[1]);
+                int second = std::stoi(timeVec[2]);
+
+                if (ampm == "PM" || ampm == "pm") {
+                    if (hour != 12) {
+                        hour += 12;
+                    }
+                } else if (ampm == "AM" || ampm == "am") {
+                    if (hour == 12) {
+                        hour = 0;
+                    }
+                }
+
+                if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || 
+                    second < 0 || second > 59) {
+                    logWarning("TrackMan row " + std::to_string(i) + 
+                              ": Invalid time values (H:" + std::to_string(hour) +
+                              " M:" + std::to_string(minute) + 
+                              " S:" + std::to_string(second) + ")");
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                std::ostringstream oss;
+                oss << std::setfill('0') 
+                    << std::setw(2) << hour
+                    << std::setw(2) << minute
+                    << std::setw(2) << second;
+                string time = oss.str();
+
+                string finalDateTime = date + "_" + time;
+                dataRow.insert(dataRow.begin(), finalDateTime);
+                successCount++;
+
+            } catch (const std::exception& e) {
+                logError("TrackMan row " + std::to_string(i) + ": Exception - " + string(e.what()));
+                m_dataSet[SENSOR_TM].dataVec[i].insert(m_dataSet[SENSOR_TM].dataVec[i].begin(), "");
+                failCount++;
+            }
+        }
+
+        std::cout << "TrackMan time processing complete:" << std::endl;
+        std::cout << "  Success: " << successCount << std::endl;
+        std::cout << "  Failed: " << failCount << std::endl;
+
+    } catch (const std::exception& e) {
+        logError("TrackMan time processing failed: " + string(e.what()));
     }
 }
 
+// ============================================================================
+// addMaxTime, addWaveTime, addNXTime, addGRadarTime
+// (이전과 동일하므로 생략 - 위의 전체 코드 참조)
+// ============================================================================
+
+void DataLoader::addMaxTime()
+{
+    std::cout << "\n--- Adding MAX time information ---" << std::endl;
+
+    try {
+        int nCsvTime = -1;
+        if (!findColumnIndex(m_dataSet[SENSOR_MAX].item, "Time", nCsvTime)) {
+            logError("MAX: 'Time' column not found");
+            return;
+        }
+
+        std::cout << "MAX: Time column found at index " << nCsvTime << std::endl;
+        m_dataSet[SENSOR_MAX].item.insert(m_dataSet[SENSOR_MAX].item.begin(), "Date-Time");
+
+        int successCount = 0, failCount = 0;
+
+        for (size_t i = 0; i < m_dataSet[SENSOR_MAX].dataVec.size(); i++)
+        {
+            try {
+                vector<string>& dataRow = m_dataSet[SENSOR_MAX].dataVec[i];
+                
+                if (nCsvTime >= static_cast<int>(dataRow.size())) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string val = sanitizeString(dataRow[nCsvTime]);
+                if (val.empty()) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                vector<string> strVec = split(val, " ");
+                if (strVec.size() < 3) {
+                    logWarning("MAX row " + std::to_string(i) + ": Invalid format: " + val);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string dateStr = strVec[1];
+                string timeStr = strVec[2];
+
+                dateStr.erase(std::remove(dateStr.begin(), dateStr.end(), '.'), dateStr.end());
+                timeStr.erase(std::remove(timeStr.begin(), timeStr.end(), ':'), timeStr.end());
+
+                string finalDateTime = dateStr + "_" + timeStr;
+                dataRow.insert(dataRow.begin(), finalDateTime);
+                successCount++;
+
+            } catch (const std::exception& e) {
+                logError("MAX row " + std::to_string(i) + ": " + string(e.what()));
+                m_dataSet[SENSOR_MAX].dataVec[i].insert(m_dataSet[SENSOR_MAX].dataVec[i].begin(), "");
+                failCount++;
+            }
+        }
+
+        std::cout << "MAX time processing: Success=" << successCount << ", Failed=" << failCount << std::endl;
+
+    } catch (const std::exception& e) {
+        logError("MAX time processing failed: " + string(e.what()));
+    }
+}
+
+void DataLoader::addWaveTime()
+{
+    std::cout << "\n--- Adding Wave time information ---" << std::endl;
+
+    try {
+        int nCsvTime = -1;
+        if (!findColumnIndex(m_dataSet[SENSOR_WAVE].item, "Name", nCsvTime)) {
+            logError("Wave: 'Name' column not found");
+            return;
+        }
+
+        std::cout << "Wave: Name column found at index " << nCsvTime << std::endl;
+        m_dataSet[SENSOR_WAVE].item.insert(m_dataSet[SENSOR_WAVE].item.begin(), "Date-Time");
+
+        int successCount = 0, failCount = 0;
+
+        for (size_t i = 0; i < m_dataSet[SENSOR_WAVE].dataVec.size(); i++)
+        {
+            try {
+                vector<string>& dataRow = m_dataSet[SENSOR_WAVE].dataVec[i];
+                
+                if (nCsvTime >= static_cast<int>(dataRow.size())) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string val = sanitizeString(dataRow[nCsvTime]);
+                if (val.empty()) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                vector<string> strVec = split(val, "_");
+                if (strVec.size() < 3) {
+                    logWarning("Wave row " + std::to_string(i) + ": Invalid format: " + val);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string date = strVec[1];
+                string time = strVec[2];
+
+                date.erase(std::remove(date.begin(), date.end(), '.'), date.end());
+                time.erase(std::remove(time.begin(), time.end(), '.'), time.end());
+
+                string finalDateTime = date + "_" + time;
+                dataRow.insert(dataRow.begin(), finalDateTime);
+                successCount++;
+
+            } catch (const std::exception& e) {
+                logError("Wave row " + std::to_string(i) + ": " + string(e.what()));
+                m_dataSet[SENSOR_WAVE].dataVec[i].insert(m_dataSet[SENSOR_WAVE].dataVec[i].begin(), "");
+                failCount++;
+            }
+        }
+
+        std::cout << "Wave time processing: Success=" << successCount << ", Failed=" << failCount << std::endl;
+
+    } catch (const std::exception& e) {
+        logError("Wave time processing failed: " + string(e.what()));
+    }
+}
+
+void DataLoader::addNXTime()
+{
+    std::cout << "\n--- Adding NX time information ---" << std::endl;
+
+    try {
+        int nCsvTime = -1;
+        if (!findColumnIndex(m_dataSet[SENSOR_NX].item, "Date", nCsvTime)) {
+            logError("NX: 'Date' column not found");
+            return;
+        }
+
+        std::cout << "NX: Date column found at index " << nCsvTime << std::endl;
+        m_dataSet[SENSOR_NX].item.insert(m_dataSet[SENSOR_NX].item.begin(), "Date-Time");
+
+        int successCount = 0, failCount = 0;
+
+        for (size_t i = 0; i < m_dataSet[SENSOR_NX].dataVec.size(); i++)
+        {
+            try {
+                vector<string>& dataRow = m_dataSet[SENSOR_NX].dataVec[i];
+                
+                if (nCsvTime >= static_cast<int>(dataRow.size())) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string val = sanitizeString(dataRow[nCsvTime]);
+                if (val.empty()) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                vector<string> strVec = split(val, "_");
+                if (strVec.size() < 2) {
+                    logWarning("NX row " + std::to_string(i) + ": Invalid format: " + val);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string date = strVec[0];
+                string time = strVec[1];
+
+                date.erase(std::remove(date.begin(), date.end(), '.'), date.end());
+                time.erase(std::remove(time.begin(), time.end(), '.'), time.end());
+
+                string finalDateTime = date + "_" + time;
+                dataRow.insert(dataRow.begin(), finalDateTime);
+                successCount++;
+
+            } catch (const std::exception& e) {
+                logError("NX row " + std::to_string(i) + ": " + string(e.what()));
+                m_dataSet[SENSOR_NX].dataVec[i].insert(m_dataSet[SENSOR_NX].dataVec[i].begin(), "");
+                failCount++;
+            }
+        }
+
+        std::cout << "NX time processing: Success=" << successCount << ", Failed=" << failCount << std::endl;
+
+    } catch (const std::exception& e) {
+        logError("NX time processing failed: " + string(e.what()));
+    }
+}
+
+void DataLoader::addGRadarTime()
+{
+    std::cout << "\n--- Adding GRadar time information ---" << std::endl;
+
+    try {
+        int nCsvTime = -1;
+        if (!findColumnIndex(m_dataSet[SENSOR_GRADAR].item, "Name", nCsvTime)) {
+            logError("GRadar: 'Name' column not found");
+            return;
+        }
+
+        std::cout << "GRadar: Name column found at index " << nCsvTime << std::endl;
+        m_dataSet[SENSOR_GRADAR].item.insert(m_dataSet[SENSOR_GRADAR].item.begin(), "Date-Time");
+
+        int successCount = 0, failCount = 0;
+
+        for (size_t i = 0; i < m_dataSet[SENSOR_GRADAR].dataVec.size(); i++)
+        {
+            try {
+                vector<string>& dataRow = m_dataSet[SENSOR_GRADAR].dataVec[i];
+                
+                if (nCsvTime >= static_cast<int>(dataRow.size())) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string val = sanitizeString(dataRow[nCsvTime]);
+                if (val.empty()) {
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                vector<string> strVec = split(val, "_");
+                if (strVec.size() < 3) {
+                    logWarning("GRadar row " + std::to_string(i) + ": Invalid format: " + val);
+                    dataRow.insert(dataRow.begin(), "");
+                    failCount++;
+                    continue;
+                }
+
+                string date = strVec[1];
+                string time = strVec[2];
+
+                date.erase(std::remove(date.begin(), date.end(), '.'), date.end());
+                time.erase(std::remove(time.begin(), time.end(), '.'), time.end());
+
+                string finalDateTime = date + "_" + time;
+                dataRow.insert(dataRow.begin(), finalDateTime);
+                successCount++;
+
+            } catch (const std::exception& e) {
+                logError("GRadar row " + std::to_string(i) + ": " + string(e.what()));
+                m_dataSet[SENSOR_GRADAR].dataVec[i].insert(m_dataSet[SENSOR_GRADAR].dataVec[i].begin(), "");
+                failCount++;
+            }
+        }
+
+        std::cout << "GRadar time processing: Success=" << successCount << ", Failed=" << failCount << std::endl;
+
+    } catch (const std::exception& e) {
+        logError("GRadar time processing failed: " + string(e.what()));
+    }
+}
+
+// ============================================================================
+// excute - 시간 정보 추출 실행
+// ============================================================================
+
 void DataLoader::excute(stShotInfo* outputData[(int)SENSOR_TOTALCNT])
 {
-    // GCQ는 파일 로드할 때 시간 정보 추가 함
+    std::cout << "\n=== Starting time information extraction ===" << std::endl;
 
     if (m_dataSet[SENSOR_TM].dataVec.size() != 0)
         addTrackManTime();
@@ -767,406 +1574,10 @@ void DataLoader::excute(stShotInfo* outputData[(int)SENSOR_TOTALCNT])
     if (m_dataSet[SENSOR_GRADAR].dataVec.size() != 0)
         addGRadarTime();
 
-
     for (int i = 0; i < SENSOR_TOTALCNT; i++)
         outputData[i] = &m_dataSet[i];
 
-
-}
-
-vector<string> DataLoader::split(string inputStr, string delimiter)
-{
-    vector<string> rtnstr;
-    long long pos = 0;
-    string token = "";
-
-    while ((pos = inputStr.find(delimiter)) != string::npos)
-    {
-        token = inputStr.substr(0, pos);
-        rtnstr.push_back(token);
-        inputStr.erase(0, pos + delimiter.length());
-    }
-    rtnstr.push_back(inputStr);
-
-    return rtnstr;
-}
-
-void DataLoader::addGCQTime(stShotInfo inputData)
-{
-    // 데이터가 없는 경우 조기 종료
-    if (m_dataSet[SENSOR_GCQ].dataVec.empty() || inputData.dataVec.empty())
-    {
-        std::cout << "Warning: GCQ CSV or LOG data is empty. Skipping time synchronization." << std::endl;
-        return;
-    }
-
-    // 열 이름을 인덱스로 매핑하는 맵 생성
-    std::map<string, int> csvColumnMap;
-    std::map<string, int> logColumnMap;
-
-    // CSV 파일의 열 매핑
-    for (int i = 0; i < m_dataSet[SENSOR_GCQ].item.size(); i++)
-    {
-        string colName = m_dataSet[SENSOR_GCQ].item[i];
-        // 공백 제거
-        colName.erase(0, colName.find_first_not_of(" \t"));
-        colName.erase(colName.find_last_not_of(" \t") + 1);
-        csvColumnMap[colName] = i;
-    }
-
-    // LOG 파일의 열 매핑
-    for (int i = 0; i < inputData.item.size(); i++)
-    {
-        logColumnMap[inputData.item[i]] = i;
-    }
-
-    // 필요한 열 찾기
-    int numOfBS_csv = -1;
-    int numOfLA_csv = -1;
-    int numOfSA_csv = -1;
-    int numOfBSpin_csv = -1;
-
-    // CSV 열 찾기 (대소문자 구분 없이, 유연하게)
-    for (const auto& pair : csvColumnMap)
-    {
-        string lowerCol = pair.first;
-        transform(lowerCol.begin(), lowerCol.end(), lowerCol.begin(), ::tolower);
-
-        if (lowerCol.find("ball") != string::npos && lowerCol.find("speed") != string::npos)
-            numOfBS_csv = pair.second;
-        else if (lowerCol.find("launch") != string::npos && lowerCol.find("angle") != string::npos)
-            numOfLA_csv = pair.second;
-        else if (lowerCol.find("side") != string::npos && lowerCol.find("angle") != string::npos)
-            numOfSA_csv = pair.second;
-        else if (lowerCol.find("backspin") != string::npos)
-            numOfBSpin_csv = pair.second;
-    }
-
-    // 대체 이름으로 다시 찾기
-    if (numOfBS_csv == -1 && csvColumnMap.find("BallSpeed") != csvColumnMap.end())
-        numOfBS_csv = csvColumnMap["BallSpeed"];
-    if (numOfLA_csv == -1 && csvColumnMap.find("LaunchAngle") != csvColumnMap.end())
-        numOfLA_csv = csvColumnMap["LaunchAngle"];
-    if (numOfSA_csv == -1 && csvColumnMap.find("SideAngle") != csvColumnMap.end())
-        numOfSA_csv = csvColumnMap["SideAngle"];
-    if (numOfBSpin_csv == -1 && csvColumnMap.find("Backspin") != csvColumnMap.end())
-        numOfBSpin_csv = csvColumnMap["Backspin"];
-
-    // LOG 열 인덱스
-    int numOfBS_log = logColumnMap.count("BallSpeed") ? logColumnMap["BallSpeed"] : -1;
-    int numOfLA_log = logColumnMap.count("LaunchAngle") ? logColumnMap["LaunchAngle"] : -1;
-    int numOfSA_log = logColumnMap.count("BallDirection") ? logColumnMap["BallDirection"] : -1;
-    int numOfBSpin_log = logColumnMap.count("BackSpin") ? logColumnMap["BackSpin"] : -1;
-    int numOfDate_log = logColumnMap.count("Date") ? logColumnMap["Date"] : -1;
-    int numOfTime_log = logColumnMap.count("Time") ? logColumnMap["Time"] : -1;
-
-    // 필수 열 확인
-    if (numOfLA_csv == -1 || numOfSA_csv == -1 || numOfBSpin_csv == -1)
-    {
-        std::cout << "Error: Required columns not found in GCQ CSV file" << std::endl;
-        std::cout << "  Launch Angle column: " << (numOfLA_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
-        std::cout << "  Side Angle column: " << (numOfSA_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
-        std::cout << "  Backspin column: " << (numOfBSpin_csv == -1 ? "NOT FOUND" : "Found") << std::endl;
-        return;
-    }
-
-    if (numOfLA_log == -1 || numOfSA_log == -1 || numOfBSpin_log == -1 ||
-        numOfDate_log == -1 || numOfTime_log == -1)
-    {
-        std::cout << "Error: Required columns not found in GCQ LOG file" << std::endl;
-        return;
-    }
-
-    // 시간 정보를 추가한 임시 데이터셋
-    stShotInfo tempDataSet;
-    tempDataSet.item = m_dataSet[SENSOR_GCQ].item;
-    tempDataSet.item.insert(tempDataSet.item.begin(), "Date-Time");
-
-    vector<vector<string>> dataVecVec;
-    int matchedCount = 0;
-    int unmatchedCount = 0;
-
-    // 매칭 프로세스
-    for (int i = 0; i < inputData.dataVec.size(); i++)
-    {
-        // LOG 데이터 범위 검사
-        const auto& logRow = inputData.dataVec[i];
-        if (numOfLA_log >= logRow.size() ||
-            numOfSA_log >= logRow.size() ||
-            numOfBSpin_log >= logRow.size() ||
-            numOfDate_log >= logRow.size() ||
-            numOfTime_log >= logRow.size())
-        {
-            std::cout << "Warning: LOG data row " << i << " has insufficient columns" << std::endl;
-            continue;
-        }
-
-        bool matchFound = false;
-
-        // CSV 데이터와 매칭
-        for (int j = 0; j < m_dataSet[SENSOR_GCQ].dataVec.size(); j++)
-        {
-            const auto& csvRow = m_dataSet[SENSOR_GCQ].dataVec[j];
-
-            // CSV 데이터 범위 검사
-            if (numOfLA_csv >= csvRow.size() ||
-                numOfSA_csv >= csvRow.size() ||
-                numOfBSpin_csv >= csvRow.size())
-            {
-                continue;
-            }
-
-            // 빈 데이터 체크
-            if (logRow[numOfLA_log].empty() || csvRow[numOfLA_csv].empty() ||
-                logRow[numOfSA_log].empty() || csvRow[numOfSA_csv].empty() ||
-                logRow[numOfBSpin_log].empty() || csvRow[numOfBSpin_csv].empty())
-            {
-                continue;
-            }
-
-            try
-            {
-                // 값 비교 - 허용 오차 설정
-                double logLA = stod(logRow[numOfLA_log]);
-                double csvLA = stod(csvRow[numOfLA_csv]);
-                double logSA = stod(logRow[numOfSA_log]);
-                double csvSA = stod(csvRow[numOfSA_csv]);
-                double logBS = stod(logRow[numOfBSpin_log]);
-                double csvBS = stod(csvRow[numOfBSpin_csv]);
-
-                // 반올림하여 비교 (소수점 첫째자리)
-                int logLA_int = (int)round(logLA * 10);
-                int csvLA_int = (int)round(csvLA * 10);
-                int logSA_int = (int)round(logSA * 10);
-                int csvSA_int = (int)round(csvSA * 10);
-                int logBS_int = (int)round(logBS * 10);
-                int csvBS_int = (int)round(csvBS * 10);
-
-                // 매칭 조건: 세 값이 모두 일치
-                if (logLA_int == csvLA_int &&
-                    logSA_int == csvSA_int &&
-                    logBS_int == csvBS_int)
-                {
-                    vector<string> tempDataVec = csvRow;
-
-                    // 시간 정보 추가
-                    string dateTime = logRow[numOfDate_log] + "_" + logRow[numOfTime_log];
-                    tempDataVec.insert(tempDataVec.begin(), dateTime);
-
-                    dataVecVec.push_back(tempDataVec);
-                    matchFound = true;
-                    matchedCount++;
-                    break;
-                }
-            }
-            catch (const std::exception& e)
-            {
-                // 변환 오류는 무시하고 계속 진행
-                continue;
-            }
-        }
-
-        if (!matchFound)
-        {
-            unmatchedCount++;
-            if (unmatchedCount <= 5)  // 처음 5개만 출력
-            {
-                std::cout << "No match found for LOG entry " << i
-                    << " (LA: " << logRow[numOfLA_log]
-                    << ", SA: " << logRow[numOfSA_log]
-                    << ", BS: " << logRow[numOfBSpin_log] << ")" << std::endl;
-            }
-        }
-    }
-
-    // 결과 저장
-    tempDataSet.dataVec = dataVecVec;
-    m_dataSet[SENSOR_GCQ].item = tempDataSet.item;
-    m_dataSet[SENSOR_GCQ].dataVec = tempDataSet.dataVec;
-
-    std::cout << "GCQ time synchronization complete:" << std::endl;
-    std::cout << "  Total LOG entries: " << inputData.dataVec.size() << std::endl;
-    std::cout << "  Matched: " << matchedCount << std::endl;
-    std::cout << "  Unmatched: " << unmatchedCount << std::endl;
-}
-
-
-void DataLoader::addTrackManTime()
-{
-    // csv 파일의 item 중 Date 위치 추출
-    int nCsvTime;
-    for (int i = 0; i < m_dataSet[SENSOR_TM].item.size(); i++)
-    {
-        if (m_dataSet[SENSOR_TM].item[i] == "Date")
-            nCsvTime = i;
-    }
-
-
-    // TrackMan의 csv 데이터에 시간 정보 추가함
-    m_dataSet[SENSOR_TM].item.insert(m_dataSet[SENSOR_TM].item.begin(), "Date-Time");
-
-
-    for (int i = 0; i < m_dataSet[SENSOR_TM].dataVec.size(); i++)
-    {
-        string val = m_dataSet[SENSOR_TM].dataVec[i][nCsvTime];
-        vector<string> strVec = split(val, " ");
-        string date = strVec[0];
-        string ampm = strVec[1];
-        string time = strVec[2];
-
-        for (int i = 0; i < date.length(); i++)
-            date.erase(find(date.begin(), date.end(), '-'));
-
-        for (int i = 0; i < time.length(); i++)
-            time.erase(find(time.begin(), time.end(), ':'));
-
-        
-        //24시간제로 변경
-        if (ampm == "PM")
-        {
-            if (stoi(time.substr(0, 2)) == 12)
-            {
-                int val = stoi(time);
-                time = to_string(val);
-            }
-            else
-            {
-                int val = stoi(time) + 120000;
-                time = to_string(val);
-            }
-
-        }
-        else
-            time = "0" + time;
-
-        val = date + "_" + time;
-        m_dataSet[SENSOR_TM].dataVec[i].insert(m_dataSet[SENSOR_TM].dataVec[i].begin(), val);
-    }
-}
-
-void DataLoader::addMaxTime()
-{
-    // csv 파일의 item 중 Date 위치 추출
-    int nCsvTime;
-    for (int i = 0; i < m_dataSet[SENSOR_MAX].item.size(); i++)
-    {
-        if (m_dataSet[SENSOR_MAX].item[i] == "Time")
-            nCsvTime = i;
-    }
-
-
-    // Max의 csv 데이터에 시간 정보 추가함
-    m_dataSet[SENSOR_MAX].item.insert(m_dataSet[SENSOR_MAX].item.begin(), "Date-Time");
-
-    for (int i = 0; i < m_dataSet[SENSOR_MAX].dataVec.size(); i++)
-    {
-        string val = m_dataSet[SENSOR_MAX].dataVec[i][nCsvTime];
-        vector<string> strVec = split(val, " ");
-        string date = strVec[1];
-        string time = strVec[2];
-
-        for (int i = 0; i < date.length(); i++)
-            date.erase(find(date.begin(), date.end(), '.'));
-
-        for (int i = 0; i < time.length(); i++)
-            time.erase(find(time.begin(), time.end(), ':'));
-
-        val = date + "_" + time;
-        m_dataSet[SENSOR_MAX].dataVec[i].insert(m_dataSet[SENSOR_MAX].dataVec[i].begin(), val);
-    }
-}
-
-void DataLoader::addWaveTime()
-{
-    // csv 파일의 item 중 Date 위치 추출
-    int nCsvTime;
-    for (int i = 0; i < m_dataSet[SENSOR_WAVE].item.size(); i++)
-    {
-        if (m_dataSet[SENSOR_WAVE].item[i] == "Name")
-            nCsvTime = i;
-    }
-
-
-    // Wave의 csv 데이터에 시간 정보 추가함
-    m_dataSet[SENSOR_WAVE].item.insert(m_dataSet[SENSOR_WAVE].item.begin(), "Date-Time");
-
-    for (int i = 0; i < m_dataSet[SENSOR_WAVE].dataVec.size(); i++)
-    {
-        string val = m_dataSet[SENSOR_WAVE].dataVec[i][nCsvTime];
-        vector<string> strVec = split(val, "_");
-        string date = strVec[1];
-        string time = strVec[2];
-
-        for (int i = 0; i < date.length(); i++)
-            date.erase(find(date.begin(), date.end(), '.'));
-
-        for (int i = 0; i < time.length(); i++)
-            time.erase(find(time.begin(), time.end(), '.'));
-
-        val = date + "_" + time;
-        m_dataSet[SENSOR_WAVE].dataVec[i].insert(m_dataSet[SENSOR_WAVE].dataVec[i].begin(), val);
-    }
-}
-
-void DataLoader::addNXTime()
-{
-    // csv 파일의 item 중 Date 위치 추출
-    int nCsvTime;
-    for (int i = 0; i < m_dataSet[SENSOR_NX].item.size(); i++)
-    {
-        if (m_dataSet[SENSOR_NX].item[i] == "Date")
-            nCsvTime = i;
-    }
-
-
-    // NX의 csv 데이터에 시간 정보 추가함
-    m_dataSet[SENSOR_NX].item.insert(m_dataSet[SENSOR_NX].item.begin(), "Date-Time");
-
-    for (int i = 0; i < m_dataSet[SENSOR_NX].dataVec.size(); i++)
-    {
-        string val = m_dataSet[SENSOR_NX].dataVec[i][nCsvTime];
-        vector<string> strVec = split(val, "_");
-        string date = strVec[0];
-        string time = strVec[1];
-
-        for (int i = 0; i < date.length(); i++)
-            date.erase(find(date.begin(), date.end(), '.'));
-
-        for (int i = 0; i < time.length(); i++)
-            time.erase(find(time.begin(), time.end(), '.'));
-
-        val = date + "_" + time;
-        m_dataSet[SENSOR_NX].dataVec[i].insert(m_dataSet[SENSOR_NX].dataVec[i].begin(), val);
-    }
-}
-
-void DataLoader::addGRadarTime()
-{ // csv 파일의 item 중 Date 위치 추출
-    int nCsvTime;
-    for (int i = 0; i < m_dataSet[SENSOR_GRADAR].item.size(); i++)
-    {
-        if (m_dataSet[SENSOR_GRADAR].item[i] == "Name")
-            nCsvTime = i;
-    }
-
-
-    // GRadar의 csv 데이터에 시간 정보 추가함
-    m_dataSet[SENSOR_GRADAR].item.insert(m_dataSet[SENSOR_GRADAR].item.begin(), "Date-Time");
-
-    for (int i = 0; i < m_dataSet[SENSOR_GRADAR].dataVec.size(); i++)
-    {
-        string val = m_dataSet[SENSOR_GRADAR].dataVec[i][nCsvTime];
-        vector<string> strVec = split(val, "_");
-        string date = strVec[1];
-        string time = strVec[2];
-
-        for (int i = 0; i < date.length(); i++)
-            date.erase(find(date.begin(), date.end(), '.'));
-
-        for (int i = 0; i < time.length(); i++)
-            time.erase(find(time.begin(), time.end(), '.'));
-
-        val = date + "_" + time;
-        m_dataSet[SENSOR_GRADAR].dataVec[i].insert(m_dataSet[SENSOR_GRADAR].dataVec[i].begin(), val);
-    }
+    std::cout << "\n=== Time extraction complete ===" << std::endl;
+    std::cout << "Total errors: " << m_errorLog.size() << std::endl;
+    std::cout << "Total warnings: " << m_warningLog.size() << std::endl;
 }
